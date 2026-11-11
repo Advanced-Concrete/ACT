@@ -1,0 +1,52 @@
+name: Deploy FieldOps with Secrets
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build-and-deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Inject GitHub Secrets into index.html safely
+        env:
+          SB_URL: ${{ secrets.SUPABASE_URL }}
+          SB_KEY: ${{ secrets.SUPABASE_KEY }}
+          FO_SEC: ${{ secrets.FIELDOPS_SECRET }}
+        run: |
+          node -e '
+            const fs = require("fs");
+            let html = fs.readFileSync("index.html", "utf8");
+            html = html.split("__SUPABASE_URL__").join(process.env.SB_URL || "");
+            html = html.split("__SUPABASE_KEY__").join(process.env.SB_KEY || "");
+            html = html.split("__FIELDOPS_SECRET__").join(process.env.FO_SEC || "");
+            fs.writeFileSync("index.html", html, "utf8");
+          '
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
