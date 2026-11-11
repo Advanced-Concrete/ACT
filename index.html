@@ -8,6 +8,7 @@
   <script src="https://cdn.jsdelivr.net/npm/heic2any@0.0.4/dist/heic2any.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
   <style>
     :root { --safe-bottom: env(safe-area-inset-bottom, 16px); }
     body {
@@ -106,11 +107,11 @@
         <!-- Future Features: Hidden for Crew Members, Visible Only to Admins -->
         <div id="drawerAdminFutureFeatures" class="hidden space-y-1 pt-1">
           <button id="menuFeatForms" onclick="selectMenuFeature('forms')" class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition">
-            <span class="flex items-center gap-2.5">
-              <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-              Field Forms
-            </span>
-          </button>
+          <span class="flex items-center gap-2.5">
+            <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            Field Forms (PDF)
+          </span>
+        </button>
           <button id="menuFeatTimecards" onclick="selectMenuFeature('timecards')" class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition">
             <span class="flex items-center gap-2.5">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -213,9 +214,10 @@
   <!-- MAIN WORKSPACE -->
   <main class="max-w-5xl mx-auto px-3 pt-4 pb-8">
 
-    <!-- PLACEHOLDER MODULE VIEW (Forms, Time Cards, Payroll) -->
-    <section id="viewOtherModule" class="hidden max-w-md mx-auto">
-      <div class="bg-slate-800 border border-slate-700 rounded-2xl p-6 text-center space-y-3">
+   <!-- FIELD FORMS MODULE (CREW FILLER + ADMIN TEMPLATE MAPPER) -->
+    <section id="viewOtherModule" class="hidden space-y-4">
+      <!-- Placeholder for future Time Cards / Payroll modules -->
+      <div id="otherModulePlaceholderCard" class="hidden max-w-md mx-auto bg-slate-800 border border-slate-700 rounded-2xl p-6 text-center space-y-3">
         <div class="w-12 h-12 rounded-2xl bg-slate-900 border border-slate-700 mx-auto flex items-center justify-center text-emerald-400 font-bold text-lg">FO</div>
         <h2 id="otherModuleTitle" class="text-base font-bold text-white">Module</h2>
         <p class="text-xs text-slate-400 leading-relaxed">Select an option from the top-left menu to return to your workspace.</p>
@@ -223,8 +225,141 @@
           Return to Receipts & Reconciler
         </button>
       </div>
-    </section>
 
+      <!-- ACTIVE FIELD FORMS WORKSPACE -->
+      <div id="fieldFormsWorkspace" class="space-y-4">
+        <!-- Top Sub-Navigation (Admin gets "Manage / Upload Templates" button) -->
+        <div class="flex flex-wrap items-center justify-between gap-2 bg-slate-800 border border-slate-700 rounded-2xl p-3.5">
+          <div>
+            <h1 class="text-sm font-bold text-white">Field Forms & PDF Signer</h1>
+            <p class="text-[11px] text-slate-400">Select a form to fill out, sign, and email a completed PDF copy.</p>
+          </div>
+          <div class="flex items-center gap-2">
+            <button onclick="showFormsSubView('list')" id="btnFormsListTab" class="px-3 py-1.5 rounded-xl bg-emerald-600 text-white font-bold text-xs shadow">
+              Available Forms
+            </button>
+            <button onclick="showFormsSubView('admin_builder')" id="btnFormsAdminTab" class="hidden px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-700 text-indigo-300 border border-indigo-500/40 font-bold text-xs">
+              + Upload / Map PDF Template
+            </button>
+          </div>
+        </div>
+
+        <!-- SUBVIEW 1: SELECT A PDF FORM LIST + RECENT SUBMISSIONS -->
+        <div id="formsSubView_list" class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-3">
+            <div class="flex items-center justify-between">
+              <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-400">Select a PDF Form to Fill Out</h2>
+              <button onclick="loadFormTemplatesFromSupabase()" class="text-[11px] text-slate-400 hover:text-white">↻ Refresh</button>
+            </div>
+            <div id="availableFormsList" class="space-y-2"></div>
+          </div>
+
+          <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-3">
+            <h2 class="text-xs font-bold uppercase tracking-wider text-slate-400">Recently Completed PDFs</h2>
+            <div id="completedFormsList" class="space-y-2 max-h-96 overflow-y-auto custom-scroll"></div>
+          </div>
+        </div>
+
+        <!-- SUBVIEW 2: USER FORM FILLER, SIGNATURE PAD & EMAIL SENDER -->
+        <div id="formsSubView_filler" class="hidden max-w-xl mx-auto bg-slate-800 border border-slate-700 rounded-2xl p-5 space-y-4">
+          <div class="flex items-center justify-between border-b border-slate-700 pb-3">
+            <div>
+              <span class="text-[10px] font-bold uppercase tracking-wider text-emerald-400">Filling PDF Copy</span>
+              <h2 id="fillerFormTitle" class="text-base font-bold text-white">--</h2>
+            </div>
+            <button onclick="showFormsSubView('list')" class="px-3 py-1.5 rounded-xl bg-slate-900 text-slate-300 hover:text-white text-xs font-bold border border-slate-700">
+              ← Back
+            </button>
+          </div>
+
+          <div id="fillerDynamicInputs" class="space-y-3.5"></div>
+
+          <!-- Email Destination Box -->
+          <div class="p-3.5 rounded-xl bg-slate-900 border border-slate-700 space-y-2">
+            <label class="block text-xs font-bold text-emerald-300">Email Completed PDF To:</label>
+            <input type="email" id="fillerRecipientEmail" placeholder="recipient@company.com" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white font-mono focus:outline-none focus:border-emerald-500" />
+            <p class="text-[11px] text-slate-400">Generates a flattened PDF copy with your inputs and signatures stamped directly onto the form.</p>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2">
+            <button type="button" id="btnGenerateAndEmailPdf" onclick="generateAndSendFilledPdf('share_or_email')" class="py-3.5 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg transition cursor-pointer">
+              ✉ Complete & Email PDF
+            </button>
+            <button type="button" onclick="generateAndSendFilledPdf('download_only')" class="py-3.5 px-4 rounded-xl bg-slate-700 hover:bg-slate-600 text-white font-bold text-xs border border-slate-600 transition cursor-pointer">
+              ⬇ Save & Download PDF Copy
+            </button>
+          </div>
+        </div>
+
+        <!-- SUBVIEW 3: ADMIN PDF TEMPLATE UPLOADER & VISUAL/AI FIELD MAPPER -->
+        <div id="formsSubView_admin_builder" class="hidden grid grid-cols-1 lg:grid-cols-12 gap-4">
+          <!-- Left Column: Template Settings & Mapped Fields List -->
+          <div class="lg:col-span-5 bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-4 h-fit">
+            <div class="flex items-center justify-between border-b border-slate-700 pb-2.5">
+              <h2 class="text-sm font-bold text-white">1. Upload Blank PDF & Configure</h2>
+              <button onclick="resetTemplateBuilder()" class="text-[11px] text-slate-400 hover:text-white">Reset</button>
+            </div>
+
+            <div class="space-y-3">
+              <div>
+                <label class="block text-xs font-bold text-slate-300 mb-1">Select Blank PDF File</label>
+                <input type="file" id="adminPdfTemplateFile" accept="application/pdf" onchange="handleAdminTemplatePdfUpload(event)" class="w-full text-xs text-slate-300 file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-indigo-600 file:text-white hover:file:bg-indigo-500 cursor-pointer" />
+              </div>
+
+              <div>
+                <label class="block text-xs font-bold text-slate-300 mb-1">Form Name / Title</label>
+                <input type="text" id="adminTemplateTitle" placeholder="e.g. Daily Pre-Pour Checklist" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-semibold" />
+              </div>
+
+              <div>
+                <label class="block text-xs font-bold text-slate-300 mb-1">Default Email Recipient (Optional)</label>
+                <input type="email" id="adminTemplateEmail" placeholder="office@company.com" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white font-mono" />
+              </div>
+            </div>
+
+            <!-- AI Auto-Scan & Manual Add Controls -->
+            <div class="border-t border-slate-700 pt-3 space-y-2.5">
+              <div class="flex items-center justify-between">
+                <span class="text-xs font-bold text-emerald-400">2. Map Form Inputs</span>
+                <span id="builderFieldCountBadge" class="text-[11px] text-slate-400 font-mono">0 fields</span>
+              </div>
+              <p class="text-[11px] text-slate-400 leading-relaxed">
+                Click <strong>✨ AI Auto-Detect Inputs</strong> to scan the current page for blank lines/boxes, OR <strong>tap directly on the PDF preview</strong> on the right to drop a field pin where text or a signature should be stamped.
+              </p>
+              <button type="button" id="btnAiScanFormFields" onclick="aiAutoDetectPdfFormFields()" class="w-full py-2.5 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow transition">
+                ✨ AI Auto-Detect Inputs on This Page
+              </button>
+            </div>
+
+            <!-- Mapped Fields List -->
+            <div id="adminMappedFieldsList" class="space-y-2 max-h-80 overflow-y-auto custom-scroll pr-1"></div>
+
+            <button type="button" id="btnSaveFormTemplate" onclick="saveAdminPdfTemplate()" class="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg transition">
+              💾 Save & Publish PDF Template
+            </button>
+          </div>
+
+          <!-- Right Column: Interactive PDF Page Canvas where Admin taps to place/adjust inputs -->
+          <div class="lg:col-span-7 bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-3">
+            <div class="flex items-center justify-between">
+              <span class="text-xs font-bold text-slate-300">Interactive PDF Preview <span class="text-emerald-400 font-normal">(Tap anywhere on page to add field)</span></span>
+              <div class="flex items-center gap-2">
+                <button type="button" onclick="changeBuilderPdfPage(-1)" class="px-2.5 py-1 rounded-lg bg-slate-900 text-white text-xs font-bold border border-slate-700">◀</button>
+                <span id="builderPageIndicator" class="text-xs font-mono text-slate-300">Page 1 / 1</span>
+                <button type="button" onclick="changeBuilderPdfPage(1)" class="px-2.5 py-1 rounded-lg bg-slate-900 text-white text-xs font-bold border border-slate-700">▶</button>
+              </div>
+            </div>
+
+            <div id="pdfBuilderViewport" class="relative w-full bg-slate-950 border border-slate-700 rounded-xl overflow-hidden flex items-center justify-center min-h-[420px]">
+              <div id="pdfCanvasWrapper" class="relative inline-block select-none">
+                <canvas id="pdfBuilderCanvas" onclick="handlePdfCanvasTap(event)" class="block max-w-full h-auto cursor-crosshair"></canvas>
+                <div id="pdfOverlayPinsContainer" class="absolute inset-0 pointer-events-none"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
     <!-- CREW VIEW: SINGLE OR MULTI-RECEIPT CAPTURE & BLIND OCR -->
     <section id="viewCrew" class="max-w-md mx-auto space-y-4">
       <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 flex items-center justify-between">
@@ -1531,14 +1666,32 @@
       document.getElementById('sideMenuDrawer').classList.add('-translate-x-full');
     }
 
+   // =========================================================================
+    // FIELD FORMS: PDF TEMPLATE BUILDER, AI FIELD SCANNER, SIGNER & EMAILER
+    // =========================================================================
+    let formTemplates = [];
+    let formSubmissions = [];
+    let activeFillerTemplate = null;
+    let signaturePads = {};
+
+    // Builder state for Admin uploading/mapping a PDF
+    let builderPdfDoc = null;
+    let builderPdfBytes = null;
+    let builderPdfDataUrl = null;
+    let builderCurrentPage = 1;
+    let builderTotalPages = 1;
+    let builderFields = [];
+
     function selectMenuFeature(featureKey) {
-      if (currentRole !== 'admin' && featureKey !== 'receipts') {
+      if (currentRole !== 'admin' && featureKey !== 'receipts' && featureKey !== 'forms') {
         closeSideMenu();
         return;
       }
       const otherView = document.getElementById('viewOtherModule');
       const crewView = document.getElementById('viewCrew');
       const adminView = document.getElementById('viewAdmin');
+      const placeholderCard = document.getElementById('otherModulePlaceholderCard');
+      const formsWorkspace = document.getElementById('fieldFormsWorkspace');
 
       if (featureKey === 'receipts') {
         otherView.classList.add('hidden');
@@ -1548,16 +1701,694 @@
         }
         crewView.classList.remove('hidden');
         adminView.classList.add('hidden');
+      } else if (featureKey === 'forms') {
+        document.getElementById('topBarPageTitle').textContent = 'Field Forms (PDF)';
+        crewView.classList.add('hidden');
+        adminView.classList.add('hidden');
+        otherView.classList.remove('hidden');
+        if (placeholderCard) placeholderCard.classList.add('hidden');
+        if (formsWorkspace) formsWorkspace.classList.remove('hidden');
+        const adminTabBtn = document.getElementById('btnFormsAdminTab');
+        if (adminTabBtn) adminTabBtn.classList.toggle('hidden', currentRole !== 'admin');
+        showFormsSubView('list');
+        loadFormTemplatesFromSupabase();
       } else {
-        const titles = { forms: 'Field Forms', timecards: 'Time Cards', payroll: 'Payroll' };
+        const titles = { timecards: 'Time Cards', payroll: 'Payroll' };
         document.getElementById('otherModuleTitle').textContent = titles[featureKey] || 'Module';
         document.getElementById('topBarPageTitle').textContent = titles[featureKey] || 'Module';
         crewView.classList.add('hidden');
         adminView.classList.add('hidden');
         otherView.classList.remove('hidden');
+        if (formsWorkspace) formsWorkspace.classList.add('hidden');
+        if (placeholderCard) placeholderCard.classList.remove('hidden');
       }
       closeSideMenu();
       renderAll();
+    }
+
+    function showFormsSubView(subView) {
+      ['list', 'filler', 'admin_builder'].forEach(k => {
+        const el = document.getElementById(`formsSubView_${k}`);
+        if (el) el.classList.toggle('hidden', k !== subView);
+      });
+    }
+
+    async function loadFormTemplatesFromSupabase() {
+      try {
+        const cachedTpl = localStorage.getItem('fieldops_form_templates');
+        if (cachedTpl) formTemplates = JSON.parse(cachedTpl);
+        const cachedSub = localStorage.getItem('fieldops_form_submissions');
+        if (cachedSub) formSubmissions = JSON.parse(cachedSub);
+      } catch (e) {}
+
+      if (supabaseClient && isOnline) {
+        try {
+          const [tplRes, subRes] = await Promise.all([
+            supabaseClient.from('form_templates').select('*').order('created_at', { ascending: false }),
+            supabaseClient.from('form_submissions').select('*').order('created_at', { ascending: false }).limit(25)
+          ]);
+          if (!tplRes.error && tplRes.data) {
+            formTemplates = tplRes.data;
+            try { localStorage.setItem('fieldops_form_templates', JSON.stringify(formTemplates)); } catch (e) {}
+          }
+          if (!subRes.error && subRes.data) {
+            formSubmissions = subRes.data;
+            try { localStorage.setItem('fieldops_form_submissions', JSON.stringify(formSubmissions)); } catch (e) {}
+          }
+        } catch (err) {
+          console.warn('Forms load warning:', err);
+        }
+      }
+      renderAvailableFormsList();
+    }
+
+    function renderAvailableFormsList() {
+      const listEl = document.getElementById('availableFormsList');
+      const subEl = document.getElementById('completedFormsList');
+      if (!listEl || !subEl) return;
+
+      listEl.innerHTML = formTemplates.map(t => {
+        const fieldCount = Array.isArray(t.fields) ? t.fields.length : 0;
+        return `
+          <div class="p-3 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-between gap-2">
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-white truncate">${t.title}</div>
+              <div class="text-[11px] text-slate-400">${fieldCount} input field(s) ${t.default_email ? `• Sends to ${t.default_email}` : ''}</div>
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <button onclick="openFormFiller('${t.id}')" class="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow">
+                Fill & Sign
+              </button>
+              ${currentRole === 'admin' ? `<button onclick="deleteFormTemplate('${t.id}')" class="px-2 py-2 rounded-xl bg-red-950/60 hover:bg-red-900 text-red-300 font-bold text-xs">✕</button>` : ''}
+            </div>
+          </div>
+        `;
+      }).join('') || `<p class="text-xs text-slate-500 py-3">No PDF form templates uploaded yet. ${currentRole === 'admin' ? 'Click "+ Upload / Map PDF Template" above to add one.' : ''}</p>`;
+
+      subEl.innerHTML = formSubmissions.map(s => {
+        const dateStr = s.created_at ? new Date(s.created_at).toLocaleDateString() : '';
+        return `
+          <div class="p-3 rounded-xl bg-slate-900 border border-slate-800 flex items-center justify-between gap-2 text-xs">
+            <div class="min-w-0">
+              <div class="font-bold text-white truncate">${s.template_title || 'Completed Form'}</div>
+              <div class="text-[11px] text-slate-400 truncate">${s.submitted_by || 'Crew'} • ${dateStr} ${s.job_name ? `• ${s.job_name}` : ''}</div>
+            </div>
+            ${s.filled_pdf_url ? `<a href="${s.filled_pdf_url}" target="_blank" rel="noopener" class="px-2.5 py-1.5 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 font-bold text-[11px] shrink-0">View PDF</a>` : ''}
+          </div>
+        `;
+      }).join('') || `<p class="text-xs text-slate-500 py-3">No completed forms submitted yet.</p>`;
+    }
+
+    async function deleteFormTemplate(id) {
+      formTemplates = formTemplates.filter(t => t.id !== id);
+      try { localStorage.setItem('fieldops_form_templates', JSON.stringify(formTemplates)); } catch (e) {}
+      if (supabaseClient && isOnline) {
+        try { await supabaseClient.from('form_templates').delete().eq('id', id); } catch (e) {}
+      }
+      renderAvailableFormsList();
+      showSimpleToast('Template Removed', true);
+    }
+
+    // =========================================================================
+    // ADMIN TEMPLATE BUILDER: RENDER PDF, TAP-TO-PLACE PINS & AI AUTO-SCAN
+    // =========================================================================
+    function resetTemplateBuilder() {
+      builderPdfDoc = null;
+      builderPdfBytes = null;
+      builderPdfDataUrl = null;
+      builderCurrentPage = 1;
+      builderTotalPages = 1;
+      builderFields = [];
+      document.getElementById('adminPdfTemplateFile').value = '';
+      document.getElementById('adminTemplateTitle').value = '';
+      document.getElementById('adminTemplateEmail').value = '';
+      const canvas = document.getElementById('pdfBuilderCanvas');
+      if (canvas) {
+        const ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+      }
+      renderBuilderPinsAndList();
+    }
+
+    async function handleAdminTemplatePdfUpload(event) {
+      const file = event.target.files?.[0];
+      if (!file) return;
+
+      const titleInp = document.getElementById('adminTemplateTitle');
+      if (titleInp && !titleInp.value) {
+        titleInp.value = file.name.replace(/\.pdf$/i, '');
+      }
+
+      builderPdfBytes = await file.arrayBuffer();
+      builderPdfDataUrl = await new Promise(res => {
+        const r = new FileReader();
+        r.onload = e => res(e.target.result);
+        r.readAsDataURL(file);
+      });
+
+      if (window.pdfjsLib) {
+        builderPdfDoc = await window.pdfjsLib.getDocument({ data: builderPdfBytes.slice(0) }).promise;
+        builderTotalPages = builderPdfDoc.numPages;
+        builderCurrentPage = 1;
+        builderFields = [];
+        await renderBuilderPdfPage(1);
+      }
+    }
+
+    async function renderBuilderPdfPage(pageNum) {
+      if (!builderPdfDoc) return;
+      builderCurrentPage = pageNum;
+      document.getElementById('builderPageIndicator').textContent = `Page ${pageNum} / ${builderTotalPages}`;
+
+      const page = await builderPdfDoc.getPage(pageNum);
+      const viewport = page.getViewport({ scale: 1.5 });
+      const canvas = document.getElementById('pdfBuilderCanvas');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      renderBuilderPinsAndList();
+    }
+
+    function changeBuilderPdfPage(delta) {
+      if (!builderPdfDoc) return;
+      const next = builderCurrentPage + delta;
+      if (next >= 1 && next <= builderTotalPages) {
+        renderBuilderPdfPage(next);
+      }
+    }
+
+    function handlePdfCanvasTap(event) {
+      if (!builderPdfDoc) return showSimpleToast('Upload a Blank PDF First', true);
+      const canvas = document.getElementById('pdfBuilderCanvas');
+      const rect = canvas.getBoundingClientRect();
+      // Normalize coordinates to 0..1000 from top-left
+      const normX = Math.round(((event.clientX - rect.left) / rect.width) * 1000);
+      const normY = Math.round(((event.clientY - rect.top) / rect.height) * 1000);
+
+      builderFields.push({
+        id: 'fld_' + Date.now() + '_' + Math.random().toString(36).slice(2, 5),
+        page: builderCurrentPage,
+        label: `Field ${builderFields.length + 1}`,
+        type: 'text',
+        required: true,
+        x: normX,
+        y: normY
+      });
+      renderBuilderPinsAndList();
+    }
+
+    async function aiAutoDetectPdfFormFields() {
+      if (!builderPdfDoc) return showSimpleToast('Upload a Blank PDF First', true);
+      const btn = document.getElementById('btnAiScanFormFields');
+      btn.disabled = true;
+      btn.textContent = 'Scanning PDF Page with Gemini AI...';
+
+      const canvas = document.getElementById('pdfBuilderCanvas');
+      const base64Img = scaleCanvasMax(canvas, 1500).toDataURL('image/jpeg', 0.85).split(',')[1];
+
+      const prompt = `Examine this form page and detect every blank input line, box, or signature area that a user needs to fill out.
+For each blank input area, return the exact point where the user's text or signature should be stamped, scaled 0 to 1000 from the top-left corner:
+- "x": horizontal start of the blank line/box (0=left edge, 1000=right edge)
+- "y": vertical baseline of the blank line/box (0=top edge, 1000=bottom edge)
+- "label": clear human-readable prompt for the user (e.g. "Project Name", "Inspector Name", "Date", "Pour Location", "Foreman Signature")
+- "type": choose one of ["text", "date", "job", "employee", "checkbox", "signature", "textarea"]
+Return ONLY valid JSON:
+{
+  "fields": [
+    { "label": "Date", "type": "date", "x": 750, "y": 140, "required": true }
+  ]
+}`;
+
+      const res = await callGeminiWithFallback({
+        contents: [{
+          role: 'user',
+          parts: [
+            { text: prompt },
+            { inlineData: { mimeType: 'image/jpeg', data: base64Img } }
+          ]
+        }],
+        generationConfig: { temperature: 0, responseMimeType: 'application/json' }
+      });
+
+      btn.disabled = false;
+      btn.textContent = '✨ AI Auto-Detect Inputs on This Page';
+
+      if (!res.ok) return showSimpleToast(`AI Scan Error: ${res.errorReason}`, true);
+
+      try {
+        const rawText = (res.data?.candidates?.[0]?.content?.parts || []).filter(p => !p.thought && p.text).map(p => p.text).join('\n');
+        const cleaned = rawText.replace(/```json|```/gi, '').trim();
+        const parsed = JSON.parse(cleaned.match(/\{[\s\S]*\}/)?.[0] || cleaned);
+        if (Array.isArray(parsed.fields) && parsed.fields.length) {
+          // Replace fields on this page with AI detected fields
+          builderFields = builderFields.filter(f => f.page !== builderCurrentPage);
+          parsed.fields.forEach((f, idx) => {
+            builderFields.push({
+              id: 'fld_' + Date.now() + '_' + idx,
+              page: builderCurrentPage,
+              label: f.label || `Field ${idx + 1}`,
+              type: ['text', 'date', 'job', 'employee', 'checkbox', 'signature', 'textarea'].includes(f.type) ? f.type : 'text',
+              required: f.required !== false,
+              x: Math.min(Math.max(10, Number(f.x) || 100), 950),
+              y: Math.min(Math.max(10, Number(f.y) || 100), 980)
+            });
+          });
+          renderBuilderPinsAndList();
+          showSimpleToast(`Detected ${parsed.fields.length} Form Fields!`, false);
+        } else {
+          showSimpleToast('No fields detected — tap on the PDF to add manually', true);
+        }
+      } catch (e) {
+        showSimpleToast('Could not parse AI fields — tap PDF to add manually', true);
+      }
+    }
+
+    function renderBuilderPinsAndList() {
+      const overlay = document.getElementById('pdfOverlayPinsContainer');
+      const listEl = document.getElementById('adminMappedFieldsList');
+      const badgeEl = document.getElementById('builderFieldCountBadge');
+      if (!overlay || !listEl) return;
+
+      if (badgeEl) badgeEl.textContent = `${builderFields.length} field(s)`;
+
+      const pageFields = builderFields.filter(f => f.page === builderCurrentPage);
+      overlay.innerHTML = pageFields.map((f, idx) => `
+        <div style="left:${f.x / 10}%; top:${f.y / 10}%;" class=" -translate-y-full px-2 py-0.5 rounded bg-emerald-600/95 text-white font-bold text-[10px] shadow-lg border border-white/50 whitespace-nowrap">
+          #${idx + 1} ${f.label} (${f.type})
+        </div>
+      `).join('');
+
+      listEl.innerHTML = builderFields.map((f, idx) => `
+        <div class="p-2.5 rounded-xl bg-slate-900 border border-slate-700 space-y-2 text-xs">
+          <div class="flex items-center justify-between gap-2">
+            <span class="font-mono font-bold text-emerald-400">#${idx + 1} (P.${f.page})</span>
+            <div class="flex items-center gap-2">
+              <label class="flex items-center gap-1 text-[11px] text-slate-300">
+                <input type="checkbox" ${f.required ? 'checked' : ''} onchange="updateBuilderField('${f.id}', 'required', this.checked)" /> Req
+              </label>
+              <button type="button" onclick="removeBuilderField('${f.id}')" class="text-red-400 font-bold px-1.5">✕</button>
+            </div>
+          </div>
+          <div class="grid grid-cols-5 gap-1.5">
+            <input type="text" value="${f.label}" oninput="updateBuilderField('${f.id}', 'label', this.value)" class="col-span-3 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white font-semibold" placeholder="Field Label" />
+            <select onchange="updateBuilderField('${f.id}', 'type', this.value)" class="col-span-2 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-indigo-300 font-semibold">
+              <option value="text" ${f.type === 'text' ? 'selected' : ''}>Text Input</option>
+              <option value="date" ${f.type === 'date' ? 'selected' : ''}>Date</option>
+              <option value="job" ${f.type === 'job' ? 'selected' : ''}>Sage Job List</option>
+              <option value="employee" ${f.type === 'employee' ? 'selected' : ''}>Employee Name</option>
+              <option value="checkbox" ${f.type === 'checkbox' ? 'selected' : ''}>Checkbox (✓)</option>
+              <option value="signature" ${f.type === 'signature' ? 'selected' : ''}>Signature Pad</option>
+              <option value="textarea" ${f.type === 'textarea' ? 'selected' : ''}>Multi-line Note</option>
+            </select>
+          </div>
+        </div>
+      `).join('') || `<p class="text-xs text-slate-500 py-2">Tap on the PDF preview or click AI Auto-Detect to add inputs.</p>`;
+    }
+
+    function updateBuilderField(id, key, val) {
+      const target = builderFields.find(f => f.id === id);
+      if (!target) return;
+      target[key] = val;
+      if (key !== 'label') renderBuilderPinsAndList();
+      else {
+        const overlay = document.getElementById('pdfOverlayPinsContainer');
+        if (overlay) {
+          const pageFields = builderFields.filter(f => f.page === builderCurrentPage);
+          overlay.innerHTML = pageFields.map((f, idx) => `
+            <div style="left:${f.x / 10}%; top:${f.y / 10}%;" class=" -translate-y-full px-2 py-0.5 rounded bg-emerald-600/95 text-white font-bold text-[10px] shadow-lg border border-white/50 whitespace-nowrap">
+              #${idx + 1} ${f.label} (${f.type})
+            </div>
+          `).join('');
+        }
+      }
+    }
+
+    function removeBuilderField(id) {
+      builderFields = builderFields.filter(f => f.id !== id);
+      renderBuilderPinsAndList();
+    }
+
+    async function saveAdminPdfTemplate() {
+      const title = document.getElementById('adminTemplateTitle').value.trim();
+      const defaultEmail = document.getElementById('adminTemplateEmail').value.trim();
+      if (!builderPdfDataUrl || !title) {
+        return showSimpleToast('Upload a PDF and enter a Form Title', true);
+      }
+      if (!builderFields.length) {
+        return showSimpleToast('Add at least 1 input field to the PDF', true);
+      }
+
+      const btn = document.getElementById('btnSaveFormTemplate');
+      btn.disabled = true;
+      btn.textContent = 'Uploading Template to Cloud...';
+
+      const tplId = 'tpl_' + Date.now();
+      let storedPdfUrl = builderPdfDataUrl;
+
+      if (supabaseClient && isOnline) {
+        try {
+          const res = await fetch(builderPdfDataUrl);
+          const blob = await res.blob();
+          const path = `templates/${tplId}.pdf`;
+          const { error } = await supabaseClient.storage.from('forms').upload(path, blob, { contentType: 'application/pdf', upsert: true });
+          if (!error) {
+            const { data: pub } = supabaseClient.storage.from('forms').getPublicUrl(path);
+            if (pub?.publicUrl) storedPdfUrl = pub.publicUrl;
+          }
+        } catch (e) {}
+      }
+
+      const newTemplate = {
+        id: tplId,
+        title,
+        default_email: defaultEmail || null,
+        pdf_url: storedPdfUrl,
+        fields: builderFields,
+        created_at: new Date().toISOString()
+      };
+
+      formTemplates.unshift(newTemplate);
+      try { localStorage.setItem('fieldops_form_templates', JSON.stringify(formTemplates)); } catch (e) {}
+
+      if (supabaseClient && isOnline) {
+        try { await supabaseClient.from('form_templates').upsert(newTemplate); } catch (e) {}
+      }
+
+      btn.disabled = false;
+      btn.textContent = '💾 Save & Publish PDF Template';
+      resetTemplateBuilder();
+      showFormsSubView('list');
+      renderAvailableFormsList();
+      showSimpleToast('Form Template Published!', false);
+    }
+
+    // =========================================================================
+    // CREW FORM FILLER, TOUCH SIGNATURE PAD & PDF-LIB GENERATOR + EMAILER
+    // =========================================================================
+    function openFormFiller(templateId) {
+      const tpl = formTemplates.find(t => t.id === templateId);
+      if (!tpl) return;
+      activeFillerTemplate = tpl;
+      signaturePads = {};
+
+      document.getElementById('fillerFormTitle').textContent = tpl.title;
+      document.getElementById('fillerRecipientEmail').value = tpl.default_email || '';
+
+      const emp = state.employees.find(e => e.id === activeCrewEmployeeId);
+      const currentEmpName = currentRole === 'admin' ? 'Administrator' : (emp ? emp.full_name : '');
+      const todayIso = new Date().toISOString().slice(0, 10);
+
+      const jobOptions = `<option value="">-- Select Job --</option>` +
+        state.jobs.map(j => `<option value="${j.name}">${j.name}</option>`).join('');
+
+      const container = document.getElementById('fillerDynamicInputs');
+      container.innerHTML = (tpl.fields || []).map(f => {
+        const reqBadge = f.required ? `<span class="text-emerald-400">*</span>` : '';
+        if (f.type === 'date') {
+          return `
+            <div>
+              <label class="block text-xs font-bold text-slate-300 mb-1">${f.label} ${reqBadge}</label>
+              <input type="date" id="fill_${f.id}" value="${todayIso}" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white" />
+            </div>`;
+        }
+        if (f.type === 'employee') {
+          return `
+            <div>
+              <label class="block text-xs font-bold text-slate-300 mb-1">${f.label} ${reqBadge}</label>
+              <input type="text" id="fill_${f.id}" value="${currentEmpName}" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white font-semibold" />
+            </div>`;
+        }
+        if (f.type === 'job') {
+          return `
+            <div>
+              <label class="block text-xs font-bold text-slate-300 mb-1">${f.label} ${reqBadge}</label>
+              <select id="fill_${f.id}" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white">
+                ${jobOptions}
+              </select>
+            </div>`;
+        }
+        if (f.type === 'checkbox') {
+          return `
+            <label class="flex items-center justify-between p-3 rounded-xl bg-slate-900 border border-slate-700 cursor-pointer">
+              <span class="text-xs font-bold text-white">${f.label}</span>
+              <input type="checkbox" id="fill_${f.id}" class="w-5 h-5 accent-emerald-500 rounded" />
+            </label>`;
+        }
+        if (f.type === 'textarea') {
+          return `
+            <div>
+              <label class="block text-xs font-bold text-slate-300 mb-1">${f.label} ${reqBadge}</label>
+              <textarea id="fill_${f.id}" rows="3" class="w-full bg-slate-900 border border-slate-700 rounded-xl p-3 text-xs text-white"></textarea>
+            </div>`;
+        }
+        if (f.type === 'signature') {
+          return `
+            <div class="space-y-1.5">
+              <div class="flex items-center justify-between">
+                <label class="text-xs font-bold text-emerald-300">${f.label} (Sign in box below) ${reqBadge}</label>
+                <button type="button" onclick="clearSignaturePad('${f.id}')" class="text-[11px] text-slate-400 hover:text-white underline">Clear Signature</button>
+              </div>
+              <div class="bg-white rounded-xl overflow-hidden border-2 border-slate-600">
+                <canvas id="sigCanvas_${f.id}" width="500" height="150" class="w-full h-32 touch-none cursor-crosshair"></canvas>
+              </div>
+            </div>`;
+        }
+        return `
+          <div>
+            <label class="block text-xs font-bold text-slate-300 mb-1">${f.label} ${reqBadge}</label>
+            <input type="text" id="fill_${f.id}" placeholder="Enter ${f.label}" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white" />
+          </div>`;
+      }).join('');
+
+      showFormsSubView('filler');
+
+      // Initialize any signature pads
+      setTimeout(() => {
+        (tpl.fields || []).filter(f => f.type === 'signature').forEach(f => initSignaturePad(f.id));
+      }, 60);
+    }
+
+    function initSignaturePad(fieldId) {
+      const canvas = document.getElementById(`sigCanvas_${fieldId}`);
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      ctx.strokeStyle = '#0f172a';
+      ctx.lineWidth = 2.6;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      let drawing = false;
+      let hasInk = false;
+      signaturePads[fieldId] = { canvas, hasInk: () => hasInk, clear: () => { ctx.clearRect(0, 0, canvas.width, canvas.height); hasInk = false; } };
+
+      const getPos = e => {
+        const r = canvas.getBoundingClientRect();
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        return {
+          x: ((clientX - r.left) / r.width) * canvas.width,
+          y: ((clientY - r.top) / r.height) * canvas.height
+        };
+      };
+
+      const start = e => {
+        e.preventDefault();
+        drawing = true;
+        hasInk = true;
+        const p = getPos(e);
+        ctx.beginPath();
+        ctx.moveTo(p.x, p.y);
+      };
+      const move = e => {
+        if (!drawing) return;
+        e.preventDefault();
+        const p = getPos(e);
+        ctx.lineTo(p.x, p.y);
+        ctx.stroke();
+      };
+      const end = () => { drawing = false; };
+
+      canvas.addEventListener('mousedown', start);
+      canvas.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', end);
+      canvas.addEventListener('touchstart', start, { passive: false });
+      canvas.addEventListener('touchmove', move, { passive: false });
+      canvas.addEventListener('touchend', end);
+    }
+
+    function clearSignaturePad(fieldId) {
+      if (signaturePads[fieldId]) signaturePads[fieldId].clear();
+    }
+
+    async function generateAndSendFilledPdf(mode) {
+      if (!activeFillerTemplate || !window.PDFLib) return;
+
+      const fields = activeFillerTemplate.fields || [];
+      const answers = {};
+      let detectedJobName = '';
+
+      // 1. Validate required fields
+      for (const f of fields) {
+        if (f.type === 'signature') {
+          const pad = signaturePads[f.id];
+          if (f.required && (!pad || !pad.hasInk())) {
+            return showSimpleToast(`Signature Required: ${f.label}`, true);
+          }
+          answers[f.label] = '[Signed]';
+        } else if (f.type === 'checkbox') {
+          const el = document.getElementById(`fill_${f.id}`);
+          answers[f.label] = el && el.checked ? 'Yes' : 'No';
+        } else {
+          const el = document.getElementById(`fill_${f.id}`);
+          const val = el ? el.value.trim() : '';
+          if (f.required && !val) {
+            return showSimpleToast(`Required Field: ${f.label}`, true);
+          }
+          answers[f.label] = val;
+          if (f.type === 'job' && val) detectedJobName = val;
+        }
+      }
+
+      const recipientEmail = document.getElementById('fillerRecipientEmail').value.trim();
+      if (mode === 'share_or_email' && !recipientEmail) {
+        return showSimpleToast('Enter a Recipient Email Address', true);
+      }
+
+      const btn = document.getElementById('btnGenerateAndEmailPdf');
+      btn.disabled = true;
+      btn.textContent = 'Stamping PDF & Uploading...';
+
+      try {
+        // 2. Fetch the master blank PDF bytes and clone via pdf-lib
+        const existingPdfBytes = await fetch(activeFillerTemplate.pdf_url).then(r => r.arrayBuffer());
+        const pdfDoc = await window.PDFLib.PDFDocument.load(existingPdfBytes);
+        const font = await pdfDoc.embedFont(window.PDFLib.StandardFonts.HelveticaBold);
+        const pages = pdfDoc.getPages();
+
+        for (const f of fields) {
+          const pageIdx = Math.max(0, Math.min((f.page || 1) - 1, pages.length - 1));
+          const page = pages[pageIdx];
+          const { width, height } = page.getSize();
+
+          const pdfX = (f.x / 1000) * width;
+          // Convert top-left Y (0..1000) to bottom-left PDF points
+          const pdfY = height - ((f.y / 1000) * height);
+
+          if (f.type === 'signature') {
+            const pad = signaturePads[f.id];
+            if (pad && pad.hasInk()) {
+              const pngDataUrl = pad.canvas.toDataURL('image/png');
+              const pngImage = await pdfDoc.embedPng(pngDataUrl);
+              page.drawImage(pngImage, {
+                x: pdfX,
+                y: Math.max(10, pdfY - 28),
+                width: 120,
+                height: 36
+              });
+            }
+          } else if (f.type === 'checkbox') {
+            const el = document.getElementById(`fill_${f.id}`);
+            if (el && el.checked) {
+              page.drawText('X', { x: pdfX, y: pdfY - 4, size: 12, font });
+            }
+          } else {
+            const el = document.getElementById(`fill_${f.id}`);
+            const textVal = el ? el.value.trim() : '';
+            if (textVal) {
+              page.drawText(textVal, {
+                x: pdfX,
+                y: pdfY - 3,
+                size: 10,
+                font,
+                maxWidth: width - pdfX - 20,
+                lineHeight: 12
+              });
+            }
+          }
+        }
+
+        const pdfBytes = await pdfDoc.save();
+        const pdfBlob = new Blob([pdfBytes], { type: 'application/pdf' });
+        const safeFileName = `${activeFillerTemplate.title.replace(/[^a-zA-Z0-9_-]/g, '_')}_${new Date().toISOString().slice(0, 10)}.pdf`;
+        const pdfFile = new File([pdfBlob], safeFileName, { type: 'application/pdf' });
+
+        // 3. Upload completed PDF to Supabase Storage ('forms' bucket)
+        const subId = 'sub_' + Date.now();
+        let publicPdfUrl = null;
+        if (supabaseClient && isOnline) {
+          try {
+            const storagePath = `completed/${subId}_${safeFileName}`;
+            const { error } = await supabaseClient.storage.from('forms').upload(storagePath, pdfBlob, { contentType: 'application/pdf', upsert: true });
+            if (!error) {
+              const { data: pub } = supabaseClient.storage.from('forms').getPublicUrl(storagePath);
+              publicPdfUrl = pub?.publicUrl || null;
+            }
+          } catch (e) {}
+        }
+
+        const emp = state.employees.find(e => e.id === activeCrewEmployeeId);
+        const submitterName = currentRole === 'admin' ? 'Administrator' : (emp ? emp.full_name : 'Crew Member');
+
+        const submissionRecord = {
+          id: subId,
+          template_id: activeFillerTemplate.id,
+          template_title: activeFillerTemplate.title,
+          submitted_by: submitterName,
+          recipient_email: recipientEmail || null,
+          job_name: detectedJobName || null,
+          filled_pdf_url: publicPdfUrl,
+          answers,
+          created_at: new Date().toISOString()
+        };
+
+        formSubmissions.unshift(submissionRecord);
+        try { localStorage.setItem('fieldops_form_submissions', JSON.stringify(formSubmissions)); } catch (e) {}
+        if (supabaseClient && isOnline) {
+          try { await supabaseClient.from('form_submissions').insert(submissionRecord); } catch (e) {}
+        }
+
+        // 4. Download or Trigger Email with PDF Attached / Linked
+        if (mode === 'download_only') {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(pdfBlob);
+          a.download = safeFileName;
+          a.click();
+          showSimpleToast('Completed PDF Downloaded!', false);
+        } else {
+          // On mobile phones (Android/iOS), navigator.canShare attaches the actual PDF file to the email app!
+          if (navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
+            await navigator.share({
+              title: `${activeFillerTemplate.title} — ${submitterName}`,
+              text: `Completed form "${activeFillerTemplate.title}" submitted by ${submitterName}.${publicPdfUrl ? '\nCloud PDF Copy: ' + publicPdfUrl : ''}`,
+              files: [pdfFile]
+            });
+          } else {
+            // Desktop fallback: auto-download the PDF and open pre-addressed email with the cloud PDF link
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(pdfBlob);
+            a.download = safeFileName;
+            a.click();
+
+            const subject = encodeURIComponent(`${activeFillerTemplate.title} - ${submitterName} (${new Date().toLocaleDateString()})`);
+            const summaryLines = Object.entries(answers).map(([k, v]) => `${k}: ${v}`).join('\n');
+            const body = encodeURIComponent(
+              `Completed PDF Form: ${activeFillerTemplate.title}\nSubmitted By: ${submitterName}\n\n` +
+              (publicPdfUrl ? `View / Download Signed PDF:\n${publicPdfUrl}\n\n` : `(Signed PDF downloaded to your computer — attach ${safeFileName})\n\n`) +
+              `--- Form Summary ---\n${summaryLines}`
+            );
+            window.location.href = `mailto:${encodeURIComponent(recipientEmail)}?subject=${subject}&body=${body}`;
+          }
+          showSimpleToast('PDF Generated & Ready to Send!', false);
+        }
+
+        showFormsSubView('list');
+        renderAvailableFormsList();
+      } catch (err) {
+        showSimpleToast(`PDF Error: ${err.message}`, true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '✉ Complete & Email PDF';
+      }
     }
 
     function openAdminPage(pageKey) {
