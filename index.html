@@ -339,20 +339,31 @@
             </button>
           </div>
 
-          <!-- Right Column: Interactive PDF Page Canvas where Admin taps to place/adjust inputs -->
+          <!-- Right Column: Interactive Zoomable & Draggable PDF Page Canvas -->
           <div class="lg:col-span-7 bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-3">
-            <div class="flex items-center justify-between">
-              <span class="text-xs font-bold text-slate-300">Interactive PDF Preview <span class="text-emerald-400 font-normal">(Tap anywhere on page to add field)</span></span>
-              <div class="flex items-center gap-2">
-                <button type="button" onclick="changeBuilderPdfPage(-1)" class="px-2.5 py-1 rounded-lg bg-slate-900 text-white text-xs font-bold border border-slate-700">◀</button>
-                <span id="builderPageIndicator" class="text-xs font-mono text-slate-300">Page 1 / 1</span>
-                <button type="button" onclick="changeBuilderPdfPage(1)" class="px-2.5 py-1 rounded-lg bg-slate-900 text-white text-xs font-bold border border-slate-700">▶</button>
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <span class="text-xs font-bold text-slate-200">Interactive PDF Mapper</span>
+                <p class="text-[11px] text-emerald-400">Tap empty space to add a field • Drag any pin to move its exact placement</p>
+              </div>
+
+              <div class="flex items-center gap-1.5">
+                <!-- Zoom Controls -->
+                <button type="button" onclick="adjustBuilderZoom(-0.25)" class="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold border border-slate-700">−</button>
+                <span id="builderZoomIndicator" onclick="resetBuilderZoom()" class="cursor-pointer text-xs font-mono font-bold text-emerald-400 min-w-[46px] text-center" title="Click to reset zoom">100%</span>
+                <button type="button" onclick="adjustBuilderZoom(0.25)" class="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold border border-slate-700">+</button>
+
+                <!-- Page Controls -->
+                <span class="text-slate-600 px-1">|</span>
+                <button type="button" onclick="changeBuilderPdfPage(-1)" class="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold border border-slate-700">◀</button>
+                <span id="builderPageIndicator" class="text-xs font-mono text-slate-300">P. 1/1</span>
+                <button type="button" onclick="changeBuilderPdfPage(1)" class="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold border border-slate-700">▶</button>
               </div>
             </div>
 
-            <div id="pdfBuilderViewport" class="relative w-full bg-slate-950 border border-slate-700 rounded-xl overflow-hidden flex items-center justify-center min-h-[420px]">
-              <div id="pdfCanvasWrapper" class="relative inline-block select-none">
-                <canvas id="pdfBuilderCanvas" onclick="handlePdfCanvasTap(event)" class="block max-w-full h-auto cursor-crosshair"></canvas>
+            <div id="pdfBuilderViewport" class="relative w-full bg-slate-950 border border-slate-700 rounded-xl overflow-auto custom-scroll max-h-[75vh] min-h-[440px] p-2">
+              <div id="pdfCanvasWrapper" class="relative inline-block select-none origin-top-left">
+                <canvas id="pdfBuilderCanvas" onclick="handlePdfCanvasTap(event)" class="block cursor-crosshair"></canvas>
                 <div id="pdfOverlayPinsContainer" class="absolute inset-0 pointer-events-none"></div>
               </div>
             </div>
@@ -1667,20 +1678,24 @@
     }
 
    // =========================================================================
-    // FIELD FORMS: PDF TEMPLATE BUILDER, AI FIELD SCANNER, SIGNER & EMAILER
+    // FIELD FORMS: ZOOMABLE DRAG-MAPPER, AI SCANNER, SIGNER & SUPABASE CLEANUP
     // =========================================================================
     let formTemplates = [];
     let formSubmissions = [];
     let activeFillerTemplate = null;
     let signaturePads = {};
 
-    // Builder state for Admin uploading/mapping a PDF
+    // Builder state for Admin uploading/editing a PDF template
+    let editingTemplateId = null;
     let builderPdfDoc = null;
     let builderPdfBytes = null;
     let builderPdfDataUrl = null;
     let builderCurrentPage = 1;
     let builderTotalPages = 1;
     let builderFields = [];
+    let builderZoom = 1.0;
+    let draggingFieldId = null;
+    let justFinishedPinDrag = false;
 
     function selectMenuFeature(featureKey) {
       if (currentRole !== 'admin' && featureKey !== 'receipts' && featureKey !== 'forms') {
@@ -1733,6 +1748,15 @@
       });
     }
 
+    // Helper to extract storage bucket file path from a public Supabase URL
+    function extractFormsStoragePath(publicUrl) {
+      if (!publicUrl || typeof publicUrl !== 'string') return null;
+      const marker = '/storage/v1/object/public/forms/';
+      const idx = publicUrl.indexOf(marker);
+      if (idx === -1) return null;
+      return decodeURIComponent(publicUrl.slice(idx + marker.length).split('?')[0]);
+    }
+
     async function loadFormTemplatesFromSupabase() {
       try {
         const cachedTpl = localStorage.getItem('fieldops_form_templates');
@@ -1745,7 +1769,7 @@
         try {
           const [tplRes, subRes] = await Promise.all([
             supabaseClient.from('form_templates').select('*').order('created_at', { ascending: false }),
-            supabaseClient.from('form_submissions').select('*').order('created_at', { ascending: false }).limit(25)
+            supabaseClient.from('form_submissions').select('*').order('created_at', { ascending: false }).limit(50)
           ]);
           if (!tplRes.error && tplRes.data) {
             formTemplates = tplRes.data;
@@ -1779,7 +1803,14 @@
               <button onclick="openFormFiller('${t.id}')" class="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow">
                 Fill & Sign
               </button>
-              ${currentRole === 'admin' ? `<button onclick="deleteFormTemplate('${t.id}')" class="px-2 py-2 rounded-xl bg-red-950/60 hover:bg-red-900 text-red-300 font-bold text-xs">✕</button>` : ''}
+              ${currentRole === 'admin' ? `
+                <button onclick="openEditFormTemplate('${t.id}')" title="Edit Pin Locations" class="px-2.5 py-2 rounded-xl bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 font-bold text-xs">
+                  Edit
+                </button>
+                <button onclick="promptDeleteFormItem('template', '${t.id}')" title="Delete Template" class="px-2.5 py-2 rounded-xl bg-red-950/60 hover:bg-red-900 text-red-300 border border-red-500/30 font-bold text-xs">
+                  ✕
+                </button>
+              ` : ''}
             </div>
           </div>
         `;
@@ -1793,46 +1824,148 @@
               <div class="font-bold text-white truncate">${s.template_title || 'Completed Form'}</div>
               <div class="text-[11px] text-slate-400 truncate">${s.submitted_by || 'Crew'} • ${dateStr} ${s.job_name ? `• ${s.job_name}` : ''}</div>
             </div>
-            ${s.filled_pdf_url ? `<a href="${s.filled_pdf_url}" target="_blank" rel="noopener" class="px-2.5 py-1.5 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 font-bold text-[11px] shrink-0">View PDF</a>` : ''}
+            <div class="flex items-center gap-1.5 shrink-0">
+              ${s.filled_pdf_url ? `<a href="${s.filled_pdf_url}" target="_blank" rel="noopener" class="px-2.5 py-1.5 rounded-lg bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 font-bold text-[11px]">View PDF</a>` : ''}
+              <button onclick="promptDeleteFormItem('submission', '${s.id}')" title="Delete Completed Form" class="px-2.5 py-1.5 rounded-lg bg-red-950/60 hover:bg-red-900 text-red-300 border border-red-500/30 font-bold text-[11px]">
+                ✕
+              </button>
+            </div>
           </div>
         `;
       }).join('') || `<p class="text-xs text-slate-500 py-3">No completed forms submitted yet.</p>`;
     }
 
-    async function deleteFormTemplate(id) {
-      formTemplates = formTemplates.filter(t => t.id !== id);
-      try { localStorage.setItem('fieldops_form_templates', JSON.stringify(formTemplates)); } catch (e) {}
-      if (supabaseClient && isOnline) {
-        try { await supabaseClient.from('form_templates').delete().eq('id', id); } catch (e) {}
+    // Confirmation Modal & Cloud Storage Deletion for Templates and Completed Forms
+    function promptDeleteFormItem(mode, id) {
+      const isTemplate = mode === 'template';
+      const item = isTemplate
+        ? formTemplates.find(t => t.id === id)
+        : formSubmissions.find(s => s.id === id);
+      if (!item) return;
+
+      const label = isTemplate ? item.title : `${item.template_title || 'Form'} (${item.submitted_by || 'Crew'})`;
+      document.getElementById('modalTitle').textContent = isTemplate ? 'Confirm Delete PDF Template' : 'Confirm Delete Completed Form';
+      document.getElementById('modalBody').innerHTML = `
+        <div class="space-y-4">
+          <div class="p-3.5 rounded-xl bg-red-950/80 border border-red-500/60 text-red-100 space-y-1.5">
+            <p class="text-xs font-bold">Are you sure you want to permanently delete "${label}"?</p>
+            <p class="text-[11px] text-red-200/90">
+              ${isTemplate
+                ? 'This will remove the mapped PDF template and delete its file from Supabase cloud storage.'
+                : 'This will remove this completed form record and delete its generated PDF file from Supabase cloud storage to free up space.'}
+            </p>
+          </div>
+          <div class="flex gap-2.5">
+            <button onclick="executeDeleteFormItem('${mode}', '${id}')" class="flex-1 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white font-bold text-xs shadow">
+              Yes, Delete Permanently
+            </button>
+            <button onclick="closeModal()" class="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs border border-slate-700">
+              Cancel
+            </button>
+          </div>
+        </div>
+      `;
+      document.getElementById('appModal').classList.remove('hidden');
+    }
+
+    async function executeDeleteFormItem(mode, id) {
+      if (mode === 'template') {
+        const target = formTemplates.find(t => t.id === id);
+        formTemplates = formTemplates.filter(t => t.id !== id);
+        try { localStorage.setItem('fieldops_form_templates', JSON.stringify(formTemplates)); } catch (e) {}
+
+        if (supabaseClient && isOnline) {
+          try {
+            const storagePath = target ? extractFormsStoragePath(target.pdf_url) : `templates/${id}.pdf`;
+            if (storagePath) await supabaseClient.storage.from('forms').remove([storagePath]);
+          } catch (e) {}
+          try { await supabaseClient.from('form_templates').delete().eq('id', id); } catch (e) {}
+        }
+        closeModal();
+        renderAvailableFormsList();
+        showSimpleToast('Template Deleted from App & Supabase', true);
+      } else {
+        const target = formSubmissions.find(s => s.id === id);
+        formSubmissions = formSubmissions.filter(s => s.id !== id);
+        try { localStorage.setItem('fieldops_form_submissions', JSON.stringify(formSubmissions)); } catch (e) {}
+
+        if (supabaseClient && isOnline) {
+          try {
+            const storagePath = target ? extractFormsStoragePath(target.filled_pdf_url) : null;
+            if (storagePath) await supabaseClient.storage.from('forms').remove([storagePath]);
+          } catch (e) {}
+          try { await supabaseClient.from('form_submissions').delete().eq('id', id); } catch (e) {}
+        }
+        closeModal();
+        renderAvailableFormsList();
+        showSimpleToast('Completed Form Deleted from Supabase', true);
       }
-      renderAvailableFormsList();
-      showSimpleToast('Template Removed', true);
     }
 
     // =========================================================================
-    // ADMIN TEMPLATE BUILDER: RENDER PDF, TAP-TO-PLACE PINS & AI AUTO-SCAN
+    // ADMIN TEMPLATE BUILDER: ZOOM, DRAG PINS, EDIT EXISTING & AI AUTO-SCAN
     // =========================================================================
     function resetTemplateBuilder() {
+      editingTemplateId = null;
       builderPdfDoc = null;
       builderPdfBytes = null;
       builderPdfDataUrl = null;
       builderCurrentPage = 1;
       builderTotalPages = 1;
       builderFields = [];
+      builderZoom = 1.0;
       document.getElementById('adminPdfTemplateFile').value = '';
       document.getElementById('adminTemplateTitle').value = '';
       document.getElementById('adminTemplateEmail').value = '';
+      const saveBtn = document.getElementById('btnSaveFormTemplate');
+      if (saveBtn) saveBtn.textContent = '💾 Save & Publish PDF Template';
       const canvas = document.getElementById('pdfBuilderCanvas');
       if (canvas) {
         const ctx = canvas.getContext('2d');
         ctx.clearRect(0, 0, canvas.width, canvas.height);
       }
+      applyBuilderZoomStyle();
       renderBuilderPinsAndList();
+    }
+
+    // Load an already-saved template back into the mapper to adjust pin positions
+    async function openEditFormTemplate(templateId) {
+      const tpl = formTemplates.find(t => t.id === templateId);
+      if (!tpl) return;
+
+      editingTemplateId = tpl.id;
+      builderPdfDataUrl = tpl.pdf_url;
+      builderFields = JSON.parse(JSON.stringify(tpl.fields || []));
+      builderZoom = 1.0;
+
+      document.getElementById('adminTemplateTitle').value = tpl.title || '';
+      document.getElementById('adminTemplateEmail').value = tpl.default_email || '';
+      const saveBtn = document.getElementById('btnSaveFormTemplate');
+      if (saveBtn) saveBtn.textContent = '💾 Save Updated Pin Locations';
+
+      showFormsSubView('admin_builder');
+      showSimpleToast('Loading PDF for Pin Editing...', false);
+
+      try {
+        builderPdfBytes = await fetch(tpl.pdf_url).then(r => r.arrayBuffer());
+        if (window.pdfjsLib) {
+          builderPdfDoc = await window.pdfjsLib.getDocument({ data: builderPdfBytes.slice(0) }).promise;
+          builderTotalPages = builderPdfDoc.numPages;
+          builderCurrentPage = 1;
+          await renderBuilderPdfPage(1);
+        }
+      } catch (err) {
+        showSimpleToast(`Failed to load PDF: ${err.message}`, true);
+      }
     }
 
     async function handleAdminTemplatePdfUpload(event) {
       const file = event.target.files?.[0];
       if (!file) return;
+
+      editingTemplateId = null;
+      const saveBtn = document.getElementById('btnSaveFormTemplate');
+      if (saveBtn) saveBtn.textContent = '💾 Save & Publish PDF Template';
 
       const titleInp = document.getElementById('adminTemplateTitle');
       if (titleInp && !titleInp.value) {
@@ -1851,6 +1984,7 @@
         builderTotalPages = builderPdfDoc.numPages;
         builderCurrentPage = 1;
         builderFields = [];
+        builderZoom = 1.0;
         await renderBuilderPdfPage(1);
       }
     }
@@ -1858,15 +1992,38 @@
     async function renderBuilderPdfPage(pageNum) {
       if (!builderPdfDoc) return;
       builderCurrentPage = pageNum;
-      document.getElementById('builderPageIndicator').textContent = `Page ${pageNum} / ${builderTotalPages}`;
+      document.getElementById('builderPageIndicator').textContent = `P. ${pageNum}/${builderTotalPages}`;
 
       const page = await builderPdfDoc.getPage(pageNum);
-      const viewport = page.getViewport({ scale: 1.5 });
+      // Render at high base resolution so zooming in stays sharp
+      const viewport = page.getViewport({ scale: 1.8 });
       const canvas = document.getElementById('pdfBuilderCanvas');
       canvas.width = viewport.width;
       canvas.height = viewport.height;
       await page.render({ canvasContext: canvas.getContext('2d'), viewport }).promise;
+      applyBuilderZoomStyle();
       renderBuilderPinsAndList();
+    }
+
+    function adjustBuilderZoom(delta) {
+      builderZoom = Math.min(Math.max(0.5, +(builderZoom + delta).toFixed(2)), 3.0);
+      applyBuilderZoomStyle();
+    }
+
+    function resetBuilderZoom() {
+      builderZoom = 1.0;
+      applyBuilderZoomStyle();
+    }
+
+    function applyBuilderZoomStyle() {
+      const canvas = document.getElementById('pdfBuilderCanvas');
+      const ind = document.getElementById('builderZoomIndicator');
+      if (ind) ind.textContent = `${Math.round(builderZoom * 100)}%`;
+      if (!canvas || !canvas.width) return;
+      // At 100% zoom, base width is 680px; scaling width scales the overlay pins identically
+      const displayWidth = Math.round(680 * builderZoom);
+      canvas.style.width = `${displayWidth}px`;
+      canvas.style.height = 'auto';
     }
 
     function changeBuilderPdfPage(delta) {
@@ -1878,10 +2035,13 @@
     }
 
     function handlePdfCanvasTap(event) {
+      if (justFinishedPinDrag) {
+        justFinishedPinDrag = false;
+        return;
+      }
       if (!builderPdfDoc) return showSimpleToast('Upload a Blank PDF First', true);
       const canvas = document.getElementById('pdfBuilderCanvas');
       const rect = canvas.getBoundingClientRect();
-      // Normalize coordinates to 0..1000 from top-left
       const normX = Math.round(((event.clientX - rect.left) / rect.width) * 1000);
       const normY = Math.round(((event.clientY - rect.top) / rect.height) * 1000);
 
@@ -1891,31 +2051,80 @@
         label: `Field ${builderFields.length + 1}`,
         type: 'text',
         required: true,
-        x: normX,
-        y: normY
+        x: Math.min(Math.max(5, normX), 960),
+        y: Math.min(Math.max(10, normY), 990)
       });
       renderBuilderPinsAndList();
+    }
+
+    // Drag any pin on the PDF canvas with mouse or finger
+    function startPinDrag(event, fieldId) {
+      event.stopPropagation();
+      if (event.cancelable) event.preventDefault();
+      draggingFieldId = fieldId;
+
+      const canvas = document.getElementById('pdfBuilderCanvas');
+      if (!canvas) return;
+
+      const moveHandler = moveEvt => {
+        if (!draggingFieldId) return;
+        if (moveEvt.cancelable) moveEvt.preventDefault();
+        const rect = canvas.getBoundingClientRect();
+        const clientX = moveEvt.touches ? moveEvt.touches[0].clientX : moveEvt.clientX;
+        const clientY = moveEvt.touches ? moveEvt.touches[0].clientY : moveEvt.clientY;
+
+        const normX = Math.min(Math.max(5, Math.round(((clientX - rect.left) / rect.width) * 1000)), 975);
+        const normY = Math.min(Math.max(10, Math.round(((clientY - rect.top) / rect.height) * 1000)), 990);
+
+        const target = builderFields.find(f => f.id === draggingFieldId);
+        if (target) {
+          target.x = normX;
+          target.y = normY;
+          renderBuilderPinsOnly();
+          const xInp = document.getElementById(`fldX_${target.id}`);
+          const yInp = document.getElementById(`fldY_${target.id}`);
+          if (xInp) xInp.value = normX;
+          if (yInp) yInp.value = normY;
+        }
+      };
+
+      const upHandler = () => {
+        draggingFieldId = null;
+        justFinishedPinDrag = true;
+        setTimeout(() => { justFinishedPinDrag = false; }, 120);
+        window.removeEventListener('mousemove', moveHandler);
+        window.removeEventListener('mouseup', upHandler);
+        window.removeEventListener('touchmove', moveHandler);
+        window.removeEventListener('touchend', upHandler);
+      };
+
+      window.addEventListener('mousemove', moveHandler, { passive: false });
+      window.addEventListener('mouseup', upHandler);
+      window.addEventListener('touchmove', moveHandler, { passive: false });
+      window.addEventListener('touchend', upHandler);
     }
 
     async function aiAutoDetectPdfFormFields() {
       if (!builderPdfDoc) return showSimpleToast('Upload a Blank PDF First', true);
       const btn = document.getElementById('btnAiScanFormFields');
       btn.disabled = true;
-      btn.textContent = 'Scanning PDF Page with Gemini AI...';
+      btn.textContent = 'Scanning Blank Spaces with Gemini AI...';
 
       const canvas = document.getElementById('pdfBuilderCanvas');
-      const base64Img = scaleCanvasMax(canvas, 1500).toDataURL('image/jpeg', 0.85).split(',')[1];
+      const base64Img = scaleCanvasMax(canvas, 1600).toDataURL('image/jpeg', 0.88).split(',')[1];
 
-      const prompt = `Examine this form page and detect every blank input line, box, or signature area that a user needs to fill out.
-For each blank input area, return the exact point where the user's text or signature should be stamped, scaled 0 to 1000 from the top-left corner:
-- "x": horizontal start of the blank line/box (0=left edge, 1000=right edge)
-- "y": vertical baseline of the blank line/box (0=top edge, 1000=bottom edge)
-- "label": clear human-readable prompt for the user (e.g. "Project Name", "Inspector Name", "Date", "Pour Location", "Foreman Signature")
-- "type": choose one of ["text", "date", "job", "employee", "checkbox", "signature", "textarea"]
+      const prompt = `You are a precision PDF form coordinate mapper. Examine this form page and detect every writable blank line, cell, or signature line.
+CRITICAL PLACEMENT RULES SO TEXT NEVER OVERLAPS PRINTED LABELS:
+1. NEVER place "x" on top of printed label words (such as "JOB NAME", "CITY", "STATE", "Labor hrs:", "Carpenter hrs:", "Gravel:", "Concrete:", "Date:").
+2. For "Label: _________" lines, place "x" in the BLANK WHITE SPACE strictly to the RIGHT of the label/colon (at least 15 to 25 units after the colon or last letter of the printed label), and place "y" directly on the horizontal line baseline.
+3. For split lines like "_________ W/operator hrs: _________", create TWO separate fields: one in the blank space to the LEFT of "W/operator hrs:" (e.g. "Equipment Used 1", x at left blank area) and one in the blank space to the RIGHT of "W/operator hrs:" (e.g. "Equipment 1 Operator Hrs", x after the colon).
+4. For boxed cells where a small caption sits at the bottom-left (like "CONTRACTOR" at the bottom of a box), place "y" in the open white space above that small caption so the stamped text does not touch the caption.
+Scale "x" (0=left edge, 1000=right edge) and "y" (0=top edge, 1000=bottom edge).
+Choose "type" from: ["text", "date", "job", "employee", "checkbox", "signature", "textarea"].
 Return ONLY valid JSON:
 {
   "fields": [
-    { "label": "Date", "type": "date", "x": 750, "y": 140, "required": true }
+    { "label": "Job Name", "type": "job", "x": 185, "y": 388, "required": true }
   ]
 }`;
 
@@ -1940,7 +2149,6 @@ Return ONLY valid JSON:
         const cleaned = rawText.replace(/```json|```/gi, '').trim();
         const parsed = JSON.parse(cleaned.match(/\{[\s\S]*\}/)?.[0] || cleaned);
         if (Array.isArray(parsed.fields) && parsed.fields.length) {
-          // Replace fields on this page with AI detected fields
           builderFields = builderFields.filter(f => f.page !== builderCurrentPage);
           parsed.fields.forEach((f, idx) => {
             builderFields.push({
@@ -1949,12 +2157,12 @@ Return ONLY valid JSON:
               label: f.label || `Field ${idx + 1}`,
               type: ['text', 'date', 'job', 'employee', 'checkbox', 'signature', 'textarea'].includes(f.type) ? f.type : 'text',
               required: f.required !== false,
-              x: Math.min(Math.max(10, Number(f.x) || 100), 950),
-              y: Math.min(Math.max(10, Number(f.y) || 100), 980)
+              x: Math.min(Math.max(10, Math.round(Number(f.x) || 150)), 960),
+              y: Math.min(Math.max(10, Math.round(Number(f.y) || 150)), 985)
             });
           });
           renderBuilderPinsAndList();
-          showSimpleToast(`Detected ${parsed.fields.length} Form Fields!`, false);
+          showSimpleToast(`Mapped ${parsed.fields.length} Fields — Drag any pin to fine-tune!`, false);
         } else {
           showSimpleToast('No fields detected — tap on the PDF to add manually', true);
         }
@@ -1963,32 +2171,45 @@ Return ONLY valid JSON:
       }
     }
 
-    function renderBuilderPinsAndList() {
+    function renderBuilderPinsOnly() {
       const overlay = document.getElementById('pdfOverlayPinsContainer');
-      const listEl = document.getElementById('adminMappedFieldsList');
-      const badgeEl = document.getElementById('builderFieldCountBadge');
-      if (!overlay || !listEl) return;
-
-      if (badgeEl) badgeEl.textContent = `${builderFields.length} field(s)`;
-
+      if (!overlay) return;
       const pageFields = builderFields.filter(f => f.page === builderCurrentPage);
+      // Bottom-left red dot marks the exact (x, y) baseline start where pdf-lib stamps the text
       overlay.innerHTML = pageFields.map((f, idx) => `
-        <div style="left:${f.x / 10}%; top:${f.y / 10}%;" class=" -translate-y-full px-2 py-0.5 rounded bg-emerald-600/95 text-white font-bold text-[10px] shadow-lg border border-white/50 whitespace-nowrap">
-          #${idx + 1} ${f.label} (${f.type})
+        <div
+          onmousedown="startPinDrag(event, '${f.id}')"
+          ontouchstart="startPinDrag(event, '${f.id}')"
+          style="left:${f.x / 10}%; top:${f.y / 10}%;"
+          title="Drag to move #${idx + 1} ${f.label}"
+          class=" -translate-y-full pointer-events-auto cursor-move select-none flex items-center gap-1 px-1.5 py-0.5 rounded-t-md rounded-br-md bg-emerald-600/95 hover:bg-emerald-500 text-white font-bold text-[10px] shadow-lg border border-white/70 whitespace-nowrap"
+        >
+          <span class="w-1.5 h-1.5 rounded-full bg-amber-300 shrink-0"></span>
+          <span>#${idx + 1} ${f.label}</span>
         </div>
       `).join('');
+    }
+
+    function renderBuilderPinsAndList() {
+      const listEl = document.getElementById('adminMappedFieldsList');
+      const badgeEl = document.getElementById('builderFieldCountBadge');
+      if (!listEl) return;
+
+      if (badgeEl) badgeEl.textContent = `${builderFields.length} field(s)`;
+      renderBuilderPinsOnly();
 
       listEl.innerHTML = builderFields.map((f, idx) => `
         <div class="p-2.5 rounded-xl bg-slate-900 border border-slate-700 space-y-2 text-xs">
           <div class="flex items-center justify-between gap-2">
-            <span class="font-mono font-bold text-emerald-400">#${idx + 1} (P.${f.page})</span>
+            <span class="font-mono font-bold text-emerald-400">#${idx + 1} (Page ${f.page})</span>
             <div class="flex items-center gap-2">
               <label class="flex items-center gap-1 text-[11px] text-slate-300">
                 <input type="checkbox" ${f.required ? 'checked' : ''} onchange="updateBuilderField('${f.id}', 'required', this.checked)" /> Req
               </label>
-              <button type="button" onclick="removeBuilderField('${f.id}')" class="text-red-400 font-bold px-1.5">✕</button>
+              <button type="button" onclick="removeBuilderField('${f.id}')" class="text-red-400 hover:text-red-300 font-bold px-1.5">✕</button>
             </div>
           </div>
+
           <div class="grid grid-cols-5 gap-1.5">
             <input type="text" value="${f.label}" oninput="updateBuilderField('${f.id}', 'label', this.value)" class="col-span-3 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white font-semibold" placeholder="Field Label" />
             <select onchange="updateBuilderField('${f.id}', 'type', this.value)" class="col-span-2 bg-slate-950 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-indigo-300 font-semibold">
@@ -2001,6 +2222,18 @@ Return ONLY valid JSON:
               <option value="textarea" ${f.type === 'textarea' ? 'selected' : ''}>Multi-line Note</option>
             </select>
           </div>
+
+          <!-- Fine-Tune X / Y Coordinates -->
+          <div class="grid grid-cols-2 gap-2 pt-1">
+            <div class="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1">
+              <span class="text-[10px] font-mono text-slate-400">X (Left→Right):</span>
+              <input type="number" id="fldX_${f.id}" min="0" max="1000" value="${f.x}" oninput="updateBuilderField('${f.id}', 'x', Number(this.value))" class="w-full bg-transparent text-right font-mono font-bold text-emerald-400 focus:outline-none" />
+            </div>
+            <div class="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2 py-1">
+              <span class="text-[10px] font-mono text-slate-400">Y (Top→Down):</span>
+              <input type="number" id="fldY_${f.id}" min="0" max="1000" value="${f.y}" oninput="updateBuilderField('${f.id}', 'y', Number(this.value))" class="w-full bg-transparent text-right font-mono font-bold text-emerald-400 focus:outline-none" />
+            </div>
+          </div>
         </div>
       `).join('') || `<p class="text-xs text-slate-500 py-2">Tap on the PDF preview or click AI Auto-Detect to add inputs.</p>`;
     }
@@ -2009,17 +2242,10 @@ Return ONLY valid JSON:
       const target = builderFields.find(f => f.id === id);
       if (!target) return;
       target[key] = val;
-      if (key !== 'label') renderBuilderPinsAndList();
-      else {
-        const overlay = document.getElementById('pdfOverlayPinsContainer');
-        if (overlay) {
-          const pageFields = builderFields.filter(f => f.page === builderCurrentPage);
-          overlay.innerHTML = pageFields.map((f, idx) => `
-            <div style="left:${f.x / 10}%; top:${f.y / 10}%;" class=" -translate-y-full px-2 py-0.5 rounded bg-emerald-600/95 text-white font-bold text-[10px] shadow-lg border border-white/50 whitespace-nowrap">
-              #${idx + 1} ${f.label} (${f.type})
-            </div>
-          `).join('');
-        }
+      if (key === 'label' || key === 'x' || key === 'y') {
+        renderBuilderPinsOnly();
+      } else {
+        renderBuilderPinsAndList();
       }
     }
 
@@ -2040,12 +2266,13 @@ Return ONLY valid JSON:
 
       const btn = document.getElementById('btnSaveFormTemplate');
       btn.disabled = true;
-      btn.textContent = 'Uploading Template to Cloud...';
+      btn.textContent = 'Saving Template to Cloud...';
 
-      const tplId = 'tpl_' + Date.now();
+      const tplId = editingTemplateId || ('tpl_' + Date.now());
       let storedPdfUrl = builderPdfDataUrl;
 
-      if (supabaseClient && isOnline) {
+      // Only upload PDF bytes if it's a new local data URL (not already a cloud URL)
+      if (supabaseClient && isOnline && builderPdfDataUrl.startsWith('data:')) {
         try {
           const res = await fetch(builderPdfDataUrl);
           const blob = await res.blob();
@@ -2058,7 +2285,7 @@ Return ONLY valid JSON:
         } catch (e) {}
       }
 
-      const newTemplate = {
+      const updatedTemplate = {
         id: tplId,
         title,
         default_email: defaultEmail || null,
@@ -2067,11 +2294,16 @@ Return ONLY valid JSON:
         created_at: new Date().toISOString()
       };
 
-      formTemplates.unshift(newTemplate);
+      const existingIdx = formTemplates.findIndex(t => t.id === tplId);
+      if (existingIdx >= 0) {
+        formTemplates[existingIdx] = updatedTemplate;
+      } else {
+        formTemplates.unshift(updatedTemplate);
+      }
       try { localStorage.setItem('fieldops_form_templates', JSON.stringify(formTemplates)); } catch (e) {}
 
       if (supabaseClient && isOnline) {
-        try { await supabaseClient.from('form_templates').upsert(newTemplate); } catch (e) {}
+        try { await supabaseClient.from('form_templates').upsert(updatedTemplate); } catch (e) {}
       }
 
       btn.disabled = false;
@@ -2079,7 +2311,7 @@ Return ONLY valid JSON:
       resetTemplateBuilder();
       showFormsSubView('list');
       renderAvailableFormsList();
-      showSimpleToast('Form Template Published!', false);
+      showSimpleToast('Form Template Saved!', false);
     }
 
     // =========================================================================
@@ -2162,7 +2394,6 @@ Return ONLY valid JSON:
 
       showFormsSubView('filler');
 
-      // Initialize any signature pads
       setTimeout(() => {
         (tpl.fields || []).filter(f => f.type === 'signature').forEach(f => initSignaturePad(f.id));
       }, 60);
@@ -2227,7 +2458,6 @@ Return ONLY valid JSON:
       const answers = {};
       let detectedJobName = '';
 
-      // 1. Validate required fields
       for (const f of fields) {
         if (f.type === 'signature') {
           const pad = signaturePads[f.id];
@@ -2249,6 +2479,141 @@ Return ONLY valid JSON:
         }
       }
 
+      const recipientEmail = document.getElementById('fillerRecipientEmail').value.trim();
+      if (mode === 'share_or_email' && !recipientEmail) {
+        return showSimpleToast('Enter a Recipient Email Address', true);
+      }
+
+      const btn = document.getElementById('btnGenerateAndEmailPdf');
+      btn.disabled = true;
+      btn.textContent = 'Stamping PDF & Uploading...';
+
+      try {
+        const existingPdfBytes = await fetch(activeFillerTemplate.pdf_url).then(r => r.arrayBuffer());
+        const pdfDoc = await window.PDFLib.PDFDocument.load(existingPdfBytes);
+        const font = await pdfDoc.embedFont(window.PDFLib.StandardFonts.HelveticaBold);
+        const pages = pdfDoc.getPages();
+
+        for (const f of fields) {
+          const pageIdx = Math.max(0, Math.min((f.page || 1) - 1, pages.length - 1));
+          const page = pages[pageIdx];
+          const { width, height } = page.getSize();
+
+          const pdfX = (f.x / 1000) * width;
+          const pdfY = height - ((f.y / 1000) * height);
+
+          if (f.type === 'signature') {
+            const pad = signaturePads[f.id];
+            if (pad && pad.hasInk()) {
+              const pngDataUrl = pad.canvas.toDataURL('image/png');
+              const pngImage = await pdfDoc.embedPng(pngDataUrl);
+              page.drawImage(pngImage, {
+                x: pdfX,
+                y: Math.max(10, pdfY - 22),
+                width: 115,
+                height: 32
+              });
+            }
+          } else if (f.type === 'checkbox') {
+            const el = document.getElementById(`fill_${f.id}`);
+            if (el && el.checked) {
+              page.drawText('X', { x: pdfX, y: pdfY - 2, size: 11, font });
+            }
+          } else {
+            const el = document.getElementById(`fill_${f.id}`);
+            const textVal = el ? el.value.trim() : '';
+            if (textVal) {
+              page.drawText(textVal, {
+                x: pdfX,
+                y: pdfY - 1,
+                size: 9.5,
+                font,
+                maxWidth: width - pdfX - 18,
+                lineHeight: 11.5
+              });
+            }
+          }
+        }
+
+        const pdfBytes = await pdfDoc.save();
+        const pdfBlob = new Blob([pdfBytes], { type: 'application/pdf' });
+        const safeFileName = `${activeFillerTemplate.title.replace(/[^a-zA-Z0-9_-]/g, '_')}_${new Date().toISOString().slice(0, 10)}.pdf`;
+        const pdfFile = new File([pdfBlob], safeFileName, { type: 'application/pdf' });
+
+        const subId = 'sub_' + Date.now();
+        let publicPdfUrl = null;
+        if (supabaseClient && isOnline) {
+          try {
+            const storagePath = `completed/${subId}_${safeFileName}`;
+            const { error } = await supabaseClient.storage.from('forms').upload(storagePath, pdfBlob, { contentType: 'application/pdf', upsert: true });
+            if (!error) {
+              const { data: pub } = supabaseClient.storage.from('forms').getPublicUrl(storagePath);
+              publicPdfUrl = pub?.publicUrl || null;
+            }
+          } catch (e) {}
+        }
+
+        const emp = state.employees.find(e => e.id === activeCrewEmployeeId);
+        const submitterName = currentRole === 'admin' ? 'Administrator' : (emp ? emp.full_name : 'Crew Member');
+
+        const submissionRecord = {
+          id: subId,
+          template_id: activeFillerTemplate.id,
+          template_title: activeFillerTemplate.title,
+          submitted_by: submitterName,
+          recipient_email: recipientEmail || null,
+          job_name: detectedJobName || null,
+          filled_pdf_url: publicPdfUrl,
+          answers,
+          created_at: new Date().toISOString()
+        };
+
+        formSubmissions.unshift(submissionRecord);
+        try { localStorage.setItem('fieldops_form_submissions', JSON.stringify(formSubmissions)); } catch (e) {}
+        if (supabaseClient && isOnline) {
+          try { await supabaseClient.from('form_submissions').insert(submissionRecord); } catch (e) {}
+        }
+
+        if (mode === 'download_only') {
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(pdfBlob);
+          a.download = safeFileName;
+          a.click();
+          showSimpleToast('Completed PDF Downloaded!', false);
+        } else {
+          if (navigator.canShare && navigator.canShare({ files: [pdfFile] })) {
+            await navigator.share({
+              title: `${activeFillerTemplate.title} — ${submitterName}`,
+              text: `Completed form "${activeFillerTemplate.title}" submitted by ${submitterName}.${publicPdfUrl ? '\nCloud PDF Copy: ' + publicPdfUrl : ''}`,
+              files: [pdfFile]
+            });
+          } else {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(pdfBlob);
+            a.download = safeFileName;
+            a.click();
+
+            const subject = encodeURIComponent(`${activeFillerTemplate.title} - ${submitterName} (${new Date().toLocaleDateString()})`);
+            const summaryLines = Object.entries(answers).map(([k, v]) => `${k}: ${v}`).join('\n');
+            const body = encodeURIComponent(
+              `Completed PDF Form: ${activeFillerTemplate.title}\nSubmitted By: ${submitterName}\n\n` +
+              (publicPdfUrl ? `View / Download Signed PDF:\n${publicPdfUrl}\n\n` : `(Signed PDF downloaded to your computer — attach ${safeFileName})\n\n`) +
+              `--- Form Summary ---\n${summaryLines}`
+            );
+            window.location.href = `mailto:${encodeURIComponent(recipientEmail)}?subject=${subject}&body=${body}`;
+          }
+          showSimpleToast('PDF Generated & Ready to Send!', false);
+        }
+
+        showFormsSubView('list');
+        renderAvailableFormsList();
+      } catch (err) {
+        showSimpleToast(`PDF Error: ${err.message}`, true);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '✉ Complete & Email PDF';
+      }
+    }
       const recipientEmail = document.getElementById('fillerRecipientEmail').value.trim();
       if (mode === 'share_or_email' && !recipientEmail) {
         return showSimpleToast('Enter a Recipient Email Address', true);
