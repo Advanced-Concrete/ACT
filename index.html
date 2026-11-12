@@ -4697,28 +4697,101 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       renderAll();
     })();
   </script>
-  <script id="fieldOpsPmModule">
+ <script id="fieldOpsPmModule">
     // =========================================================================
-    // PROJECT MANAGER ROUTING, JOB PM PROMPTS & PM PROJECT HUB
+    // 4-TIER USER HIERARCHY (ADMIN / PM / SUPERVISOR / CREW) & PM PROJECT HUB
     // =========================================================================
     let jobTimeEntries = [];
     let activePmPortalTab = 'docs';
 
-    // 1. Load & Sync Job Time Entries + Ensure Job PM Metadata is Preserved
+    const USER_ROLE_LABELS = {
+      admin:      { label: 'Admin',           badgeClass: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' },
+      pm:         { label: 'Project Manager', badgeClass: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40' },
+      supervisor: { label: 'Supervisor',      badgeClass: 'bg-amber-500/20 text-amber-300 border-amber-500/40' },
+      crew:       { label: 'Crew / User',     badgeClass: 'bg-slate-700/60 text-slate-300 border-slate-600' }
+    };
+
+    function getEmployeeRole(emp) {
+      if (!emp) return 'crew';
+      const r = (emp.role || '').toLowerCase().trim();
+      if (['admin', 'pm', 'supervisor', 'crew'].includes(r)) return r;
+      // Default Jake Textor to admin if not explicitly set yet
+      if ((emp.full_name || '').toLowerCase().includes('jake textor')) return 'admin';
+      return 'crew';
+    }
+
+    function getActiveUserEffectiveRole() {
+      if (currentRole === 'admin') return 'admin';
+      const emp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
+      return getEmployeeRole(emp);
+    }
+
+    // Universal resolver: finds the Job Name & Job ID on any statement line / receipt / doc
+    function resolveRecordJobInfo(rec) {
+      if (!rec) return { jobId: '', jobName: '' };
+      const rawCandidates = [
+        rec.job_name,
+        rec.job,
+        rec.jobName,
+        rec.assigned_job,
+        rec.ocr_job,
+        rec.job_id,
+        rec.jobId,
+        rec.project_name
+      ].filter(v => v !== undefined && v !== null && String(v).trim() !== '').map(v => String(v).trim());
+
+      const jobs = state.jobs || [];
+      for (const candidate of rawCandidates) {
+        const lower = candidate.toLowerCase();
+        const byId = jobs.find(j => String(j.id || '').toLowerCase() === lower);
+        if (byId) return { jobId: byId.id, jobName: (byId.name || '').trim() };
+
+        const byName = jobs.find(j => String(j.name || '').trim().toLowerCase() === lower);
+        if (byName) return { jobId: byName.id, jobName: (byName.name || '').trim() };
+
+        const bySageNum = jobs.find(j => j.sage_job_number && String(j.sage_job_number).trim().toLowerCase() === lower);
+        if (bySageNum) return { jobId: bySageNum.id, jobName: (bySageNum.name || '').trim() };
+      }
+
+      return {
+        jobId: String(rec.job_id || rec.jobId || '').trim(),
+        jobName: rawCandidates[0] || ''
+      };
+    }
+
+    // 1. Load & Sync Job Time Entries + Role/PM Cloud Metadata Backup
     async function loadPmPortalData() {
       try {
         const cached = localStorage.getItem('fieldops_job_time_entries');
         if (cached) jobTimeEntries = JSON.parse(cached);
       } catch (e) {}
 
+      let cloudMeta = null;
+      try {
+        const localMeta = localStorage.getItem('fieldops_roles_pm_meta');
+        if (localMeta) cloudMeta = JSON.parse(localMeta);
+      } catch (e) {}
+
       if (supabaseClient && isOnline) {
         try {
-          const [jobsRes, timeRes] = await Promise.all([
+          const [jobsRes, empRes, timeRes, metaRes] = await Promise.all([
             supabaseClient.from('jobs').select('*').eq('active', true).order('name'),
-            supabaseClient.from('job_time_entries').select('*').order('work_date', { ascending: false })
+            supabaseClient.from('employees').select('*').order('full_name'),
+            supabaseClient.from('job_time_entries').select('*').order('work_date', { ascending: false }),
+            supabaseClient.from('app_settings').select('ocr_api_key').eq('id', 'roles_pm_meta').maybeSingle()
           ]);
-          if (!jobsRes.error && jobsRes.data) {
+
+          if (!metaRes.error && metaRes.data?.ocr_api_key) {
+            try {
+              cloudMeta = JSON.parse(metaRes.data.ocr_api_key);
+              localStorage.setItem('fieldops_roles_pm_meta', JSON.stringify(cloudMeta));
+            } catch (e) {}
+          }
+          if (!jobsRes.error && jobsRes.data?.length) {
             state.jobs = jobsRes.data;
+          }
+          if (!empRes.error && empRes.data?.length) {
+            state.employees = empRes.data;
           }
           if (!timeRes.error && timeRes.data) {
             jobTimeEntries = timeRes.data;
@@ -4726,15 +4799,124 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
           }
         } catch (e) {}
       }
+
+      // Apply backed-up roles & PM assignments so nothing is ever lost
+      if (cloudMeta) {
+        if (cloudMeta.empRoles && Array.isArray(state.employees)) {
+          state.employees.forEach(e => {
+            const saved = cloudMeta.empRoles[e.id] || cloudMeta.empRoles[e.full_name];
+            if (saved) {
+              if (saved.role) e.role = saved.role;
+              if (saved.email) e.email = saved.email;
+            }
+          });
+        }
+        if (cloudMeta.jobPms && Array.isArray(state.jobs)) {
+          state.jobs.forEach(j => {
+            const saved = cloudMeta.jobPms[j.id] || cloudMeta.jobPms[j.name];
+            if (saved) {
+              if (saved.pm_name) j.pm_name = saved.pm_name;
+              if (saved.pm_email) j.pm_email = saved.pm_email;
+              if (saved.pm_employee_id) j.pm_employee_id = saved.pm_employee_id;
+            }
+          });
+        }
+      }
+      refreshRoleUiVisibility();
     }
 
-    // 2. Extend selectMenuFeature so 'pm_portal' works cleanly alongside 'receipts' and 'forms'
+    async function persistRolesAndPmMeta() {
+      const empRoles = {};
+      (state.employees || []).forEach(e => {
+        empRoles[e.id] = { role: getEmployeeRole(e), email: e.email || '' };
+        empRoles[e.full_name] = { role: getEmployeeRole(e), email: e.email || '' };
+      });
+      const jobPms = {};
+      (state.jobs || []).forEach(j => {
+        if (j.pm_name || j.pm_email) {
+          jobPms[j.id] = { pm_name: j.pm_name || '', pm_email: j.pm_email || '', pm_employee_id: j.pm_employee_id || '' };
+          jobPms[j.name] = { pm_name: j.pm_name || '', pm_email: j.pm_email || '', pm_employee_id: j.pm_employee_id || '' };
+        }
+      });
+
+      const payloadObj = { empRoles, jobPms };
+      try { localStorage.setItem('fieldops_roles_pm_meta', JSON.stringify(payloadObj)); } catch (e) {}
+
+      if (supabaseClient && isOnline) {
+        try {
+          await supabaseClient.from('app_settings').upsert({
+            id: 'roles_pm_meta',
+            ocr_api_key: JSON.stringify(payloadObj),
+            updated_at: new Date().toISOString()
+          });
+        } catch (e) {}
+      }
+    }
+
+    // 2. Role-Based Navigation & Menu Visibility
+    function refreshRoleUiVisibility() {
+      const effRole = getActiveUserEffectiveRole();
+      const emp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
+
+      // Show/hide PM Project Hub button in side drawer (Visible to Admin & PM, or if user is assigned as PM on any job)
+      const isAssignedPmOnAnyJob = emp && (state.jobs || []).some(
+        j => (j.pm_name || '').trim().toLowerCase() === (emp.full_name || '').trim().toLowerCase()
+      );
+      const pmBtn = document.getElementById('menuFeatPmPortal');
+      if (pmBtn) {
+        const canSeePmHub = (effRole === 'admin' || effRole === 'pm' || isAssignedPmOnAnyJob);
+        pmBtn.classList.toggle('hidden', !canSeePmHub);
+      }
+
+      // Inject "User Levels & Roles" button into side menu for Admins if not already present
+      const drawer = document.getElementById('sideMenuDrawer');
+      if (drawer && !document.getElementById('menuFeatUserRoles')) {
+        const pmMenuBtn = document.getElementById('menuFeatPmPortal');
+        if (pmMenuBtn && pmMenuBtn.parentNode) {
+          const roleBtn = document.createElement('button');
+          roleBtn.id = 'menuFeatUserRoles';
+          roleBtn.setAttribute('onclick', 'closeSideMenu(); openUserRolesManagerModal();');
+          roleBtn.className = 'w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition';
+          roleBtn.innerHTML = `
+            <span class="flex items-center gap-2.5">
+              <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+              User Levels & Roles
+            </span>
+            <span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-mono">Admin</span>
+          `;
+          pmMenuBtn.parentNode.insertBefore(roleBtn, pmMenuBtn.nextSibling);
+        }
+      }
+      const roleMenuBtn = document.getElementById('menuFeatUserRoles');
+      if (roleMenuBtn) {
+        roleMenuBtn.classList.toggle('hidden', effRole !== 'admin');
+      }
+
+      // Update top-right user role pill to show PM / Supervisor / Admin title
+      const roleBadge = document.getElementById('activeUserBadgeText') || document.getElementById('topBarUserLabel');
+      if (roleBadge && currentRole !== 'admin' && emp) {
+        const rInfo = USER_ROLE_LABELS[effRole] || USER_ROLE_LABELS.crew;
+        roleBadge.textContent = `${rInfo.label}: ${emp.full_name}`;
+      }
+    }
+
+    // 3. Extend selectMenuFeature so Admins, PMs, and Supervisors can navigate cleanly
     const _baseSelectMenuFeature = window.selectMenuFeature;
     window.selectMenuFeature = function(featureKey) {
       const pmSection = document.getElementById('viewPmPortal');
       if (pmSection) pmSection.classList.add('hidden');
 
+      const effRole = getActiveUserEffectiveRole();
+      const emp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
+      const isAssignedPm = emp && (state.jobs || []).some(
+        j => (j.pm_name || '').trim().toLowerCase() === (emp.full_name || '').trim().toLowerCase()
+      );
+
       if (featureKey === 'pm_portal') {
+        if (effRole !== 'admin' && effRole !== 'pm' && !isAssignedPm) {
+          closeSideMenu();
+          return showSimpleToast('PM Project Hub requires Project Manager or Admin level', true);
+        }
         document.getElementById('topBarPageTitle').textContent = 'PM Project Hub';
         document.getElementById('viewCrew')?.classList.add('hidden');
         document.getElementById('viewAdmin')?.classList.add('hidden');
@@ -4745,9 +4927,9 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         return;
       }
       if (_baseSelectMenuFeature) _baseSelectMenuFeature(featureKey);
+      refreshRoleUiVisibility();
     };
 
-    // Also hide PM Portal if Admin switches to an admin sub-page
     const _baseOpenAdminPage = window.openAdminPage;
     window.openAdminPage = function(pageKey) {
       document.getElementById('viewPmPortal')?.classList.add('hidden');
@@ -4757,16 +4939,132 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       }
     };
 
-    // 3. Intercept New Job Creation so EVERY new job prompts for Project Manager Name & Email
     window.addEventListener('DOMContentLoaded', () => {
-      setTimeout(() => {
-        loadPmPortalData();
+      setTimeout(async () => {
+        await loadPmPortalData();
         hookNewJobInputsForPmPrompt();
+        injectRoleButtonIntoPmHeader();
       }, 600);
     });
 
+    function injectRoleButtonIntoPmHeader() {
+      const pmSection = document.getElementById('viewPmPortal');
+      if (!pmSection || document.getElementById('btnOpenRolesModalInHub')) return;
+      const btnRow = pmSection.querySelector('.flex.flex-wrap.items-center.gap-2');
+      if (btnRow) {
+        const btn = document.createElement('button');
+        btn.id = 'btnOpenRolesModalInHub';
+        btn.setAttribute('onclick', 'openUserRolesManagerModal()');
+        btn.className = 'px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 font-bold text-xs';
+        btn.textContent = '👥 User Levels & Roles';
+        btnRow.appendChild(btn);
+      }
+    }
+
+    // =========================================================================
+    // 4. ADMIN USER LEVELS & ROLES MANAGER MODAL (ADMIN / PM / SUPERVISOR / CREW)
+    // =========================================================================
+    window.openUserRolesManagerModal = function() {
+      if (getActiveUserEffectiveRole() !== 'admin') {
+        return showSimpleToast('Only Administrators can change user levels', true);
+      }
+      const emps = [...(state.employees || [])].sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
+
+      document.getElementById('modalTitle').textContent = 'Manage User Levels & Roles (Admin / PM / Supervisor / Crew)';
+      document.getElementById('modalBody').innerHTML = `
+        <div class="space-y-3 text-xs">
+          <p class="text-slate-400 leading-relaxed">
+            Appoint users to <strong>Admin</strong>, <strong>Project Manager</strong>, <strong>Supervisor</strong>, or <strong>Crew / User</strong>. Project Managers automatically appear in Job PM selectors and can access the PM Project Hub for their assigned jobs.
+          </p>
+
+          <div class="flex flex-wrap gap-1.5 pb-1">
+            <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.admin.badgeClass}">Admin: Full Control</span>
+            <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.pm.badgeClass}">Project Manager: PM Hub & Job Docs/Spend</span>
+            <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.supervisor.badgeClass}">Supervisor: Field Lead</span>
+            <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.crew.badgeClass}">Crew / User: Card & Forms</span>
+          </div>
+
+          <div class="space-y-2 max-h-96 overflow-y-auto custom-scroll pr-1">
+            ${emps.map(e => {
+              const role = getEmployeeRole(e);
+              return `
+                <div class="p-2.5 rounded-xl bg-slate-900 border border-slate-700 grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
+                  <div class="sm:col-span-4 font-bold text-white truncate">
+                    ${e.full_name}
+                    ${e.active === false ? `<span class="text-[10px] text-red-400 ml-1">(Inactive)</span>` : ''}
+                  </div>
+                  <div class="sm:col-span-4">
+                    <select id="roleSelect_${e.id}" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-semibold">
+                      <option value="crew" ${role === 'crew' ? 'selected' : ''}>Crew / User</option>
+                      <option value="supervisor" ${role === 'supervisor' ? 'selected' : ''}>Supervisor</option>
+                      <option value="pm" ${role === 'pm' ? 'selected' : ''}>Project Manager</option>
+                      <option value="admin" ${role === 'admin' ? 'selected' : ''}>Administrator</option>
+                    </select>
+                  </div>
+                  <div class="sm:col-span-4">
+                    <input type="email" id="roleEmail_${e.id}" value="${(e.email || '').replace(/"/g, '&quot;')}" placeholder="Email (for PM routing)" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-[11px]" />
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+
+          <div class="flex gap-2 pt-2">
+            <button onclick="saveAllUserRoles()" class="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow">
+              💾 Save All User Levels
+            </button>
+            <button onclick="closeModal()" class="px-4 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold border border-slate-700">
+              Cancel
+            </button>
+          </div>
+        </div>
+      `;
+      document.getElementById('appModal').classList.remove('hidden');
+    };
+
+    window.saveAllUserRoles = async function() {
+      (state.employees || []).forEach(e => {
+        const rSel = document.getElementById(`roleSelect_${e.id}`);
+        const emInp = document.getElementById(`roleEmail_${e.id}`);
+        if (rSel) e.role = rSel.value;
+        if (emInp) e.email = emInp.value.trim() || null;
+
+        // If this employee is already assigned as PM on any job and we just added/updated their email, sync it to those jobs
+        if (e.email) {
+          (state.jobs || []).forEach(j => {
+            if ((j.pm_name || '').trim().toLowerCase() === (e.full_name || '').trim().toLowerCase() && !j.pm_email) {
+              j.pm_email = e.email;
+            }
+          });
+        }
+      });
+
+      await persistRolesAndPmMeta();
+      if (supabaseClient && isOnline) {
+        try { await supabaseClient.from('employees').upsert(state.employees); } catch (e) {}
+      }
+      await saveState();
+      refreshRoleUiVisibility();
+      closeModal();
+      if (!document.getElementById('viewPmPortal')?.classList.contains('hidden')) {
+        initPmPortalView();
+      }
+      showSimpleToast('User Levels & Roles Updated!', false);
+    };
+
+    // =========================================================================
+    // 5. JOB CREATION & PM ASSIGNMENT (PRIORITIZES APPOINTED PROJECT MANAGERS)
+    // =========================================================================
+    function getAppointedPmList() {
+      const allEmps = state.employees || [];
+      const pmsAndAdmins = allEmps.filter(e => {
+        const r = getEmployeeRole(e);
+        return r === 'pm' || r === 'admin';
+      });
+      return pmsAndAdmins.length ? pmsAndAdmins : allEmps;
+    }
+
     function hookNewJobInputsForPmPrompt() {
-      // Find any "Add Job" button in the Admin Jobs page and upgrade it to prompt for PM + Email
       document.querySelectorAll('button').forEach(btn => {
         const oc = btn.getAttribute('onclick') || '';
         if (oc.includes('addJob') || oc.includes('createJob')) {
@@ -4781,9 +5079,35 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       openNewJobWithPmModal(prefilledJobName);
     }
 
+    window.autoFillModalPmEmail = function(selectedName) {
+      const nameInp = document.getElementById('modalNewJobPmName');
+      const emailInp = document.getElementById('modalNewJobPmEmail');
+      if (nameInp && selectedName) nameInp.value = selectedName;
+
+      const emp = (state.employees || []).find(e => (e.full_name || '').toLowerCase() === (selectedName || '').toLowerCase());
+      if (emp && emp.email && emailInp) {
+        emailInp.value = emp.email;
+        return;
+      }
+      // Or look up email from an existing job assigned to this same PM
+      const existingJobWithPm = (state.jobs || []).find(
+        j => (j.pm_name || '').toLowerCase() === (selectedName || '').toLowerCase() && j.pm_email
+      );
+      if (existingJobWithPm && emailInp) {
+        emailInp.value = existingJobWithPm.pm_email;
+      }
+    };
+
     function openNewJobWithPmModal(prefilledJobName = '') {
-      const empOptions = `<option value="">-- Select from Roster (or type below) --</option>` +
-        (state.employees || []).map(e => `<option value="${e.full_name}">${e.full_name}</option>`).join('');
+      const pmCandidates = getAppointedPmList();
+      const otherEmps = (state.employees || []).filter(e => !pmCandidates.includes(e));
+
+      const empOptions =
+        `<option value="">-- Select Project Manager --</option>` +
+        `<optgroup label="Appointed Project Managers & Admins">` +
+        pmCandidates.map(e => `<option value="${e.full_name.replace(/"/g, '&quot;')}">${e.full_name} (${USER_ROLE_LABELS[getEmployeeRole(e)].label})</option>`).join('') +
+        `</optgroup>` +
+        (otherEmps.length ? `<optgroup label="Other Roster Users">` + otherEmps.map(e => `<option value="${e.full_name.replace(/"/g, '&quot;')}">${e.full_name}</option>`).join('') + `</optgroup>` : '');
 
       document.getElementById('modalTitle').textContent = 'Add Job & Assign Project Manager';
       document.getElementById('modalBody').innerHTML = `
@@ -4794,10 +5118,13 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
           </div>
 
           <div class="p-3 rounded-xl bg-slate-900/90 border border-indigo-500/40 space-y-3">
-            <div class="text-[11px] font-bold uppercase tracking-wider text-indigo-400">Designated Project Manager (Required)</div>
+            <div class="flex items-center justify-between">
+              <span class="text-[11px] font-bold uppercase tracking-wider text-indigo-400">Designated Project Manager (Required)</span>
+              <button type="button" onclick="openUserRolesManagerModal()" class="text-[11px] text-amber-300 underline">Manage PM Roles</button>
+            </div>
             <div>
-              <label class="block text-slate-400 mb-1">Quick-Select Employee from Roster</label>
-              <select onchange="if(this.value) document.getElementById('modalNewJobPmName').value = this.value;" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white">
+              <label class="block text-slate-400 mb-1">Select Project Manager</label>
+              <select onchange="autoFillModalPmEmail(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white">
                 ${empOptions}
               </select>
             </div>
@@ -4807,7 +5134,7 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
             </div>
             <div>
               <label class="block font-bold text-slate-300 mb-1">Project Manager Email (Default for PDF Forms) <span class="text-emerald-400">*</span></label>
-              <input type="email" id="modalNewJobPmEmail" placeholder="pm@advconcrete.com" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono" />
+              <input type="email" id="modalNewJobPmEmail" placeholder="jake@advconcrete.com" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono" />
             </div>
           </div>
 
@@ -4833,7 +5160,12 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       if (!pmName) return showSimpleToast('Enter a Project Manager Name', true);
       if (!pmEmail) return showSimpleToast('Enter the Project Manager Email', true);
 
-      const matchedEmp = (state.employees || []).find(e => e.full_name.toLowerCase() === pmName.toLowerCase());
+      const matchedEmp = (state.employees || []).find(e => (e.full_name || '').toLowerCase() === pmName.toLowerCase());
+      if (matchedEmp) {
+        if (!matchedEmp.email) matchedEmp.email = pmEmail;
+        if (getEmployeeRole(matchedEmp) === 'crew') matchedEmp.role = 'pm';
+      }
+
       const newJob = {
         id: 'job_' + Date.now(),
         name,
@@ -4849,6 +5181,7 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       const oldInp = document.getElementById('newJobInput') || document.getElementById('jobNameInput');
       if (oldInp) oldInp.value = '';
 
+      await persistRolesAndPmMeta();
       if (supabaseClient && isOnline) {
         try { await supabaseClient.from('jobs').upsert(newJob); } catch (e) {}
       }
@@ -4861,17 +5194,17 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       showSimpleToast(`Job "${name}" Saved (PM: ${pmName})`, false);
     }
 
-    // Prompt/Modal to assign or edit Project Managers for existing or Sage-synced jobs
     function checkUnassignedJobsForPmPrompt() {
       const unassigned = (state.jobs || []).filter(j => j.active !== false && (!j.pm_name || !j.pm_email));
-      if (unassigned.length > 0 && currentRole === 'admin') {
+      if (unassigned.length > 0 && getActiveUserEffectiveRole() === 'admin') {
         openAssignPmToExistingJobsModal(true);
       }
     }
 
     function openAssignPmToExistingJobsModal(onlyUnassignedNotice = false) {
       const jobs = (state.jobs || []).filter(j => j.active !== false);
-      const empDatalist = `<datalist id="pmRosterList">${(state.employees || []).map(e => `<option value="${e.full_name}">`).join('')}</datalist>`;
+      const pmCandidates = getAppointedPmList();
+      const empDatalist = `<datalist id="pmRosterList">${pmCandidates.map(e => `<option value="${e.full_name}">`).join('')}</datalist>`;
 
       document.getElementById('modalTitle').textContent = 'Assign Project Managers & Default Form Emails';
       document.getElementById('modalBody').innerHTML = `
@@ -4879,10 +5212,10 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
           ${empDatalist}
           ${onlyUnassignedNotice ? `
             <div class="p-3 rounded-xl bg-amber-950/80 border border-amber-500/60 text-amber-200">
-              <strong>New / Unassigned Jobs Detected:</strong> Please assign a Project Manager and Email below so completed PDF forms route automatically.
+              <strong>New / Unassigned Jobs Detected:</strong> Please assign a Project Manager and Email below so completed PDF forms and job spend route automatically.
             </div>
           ` : `
-            <p class="text-slate-400">Assign a Project Manager and Email to each job. When a crew member selects that job on any PDF form, the recipient email defaults to its Project Manager.</p>
+            <p class="text-slate-400">Assign a Project Manager and Email to each job. When that job is selected on any receipt or PDF form, its spend and documents link directly to that Project Manager.</p>
           `}
           <div class="space-y-2.5 max-h-96 overflow-y-auto custom-scroll pr-1">
             ${jobs.map(j => `
@@ -4919,7 +5252,11 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         if (nameEl && emailEl) {
           const pmName = nameEl.value.trim();
           const pmEmail = emailEl.value.trim();
-          const matchedEmp = (state.employees || []).find(e => e.full_name.toLowerCase() === pmName.toLowerCase());
+          const matchedEmp = (state.employees || []).find(e => (e.full_name || '').toLowerCase() === pmName.toLowerCase());
+          if (matchedEmp) {
+            if (pmEmail && !matchedEmp.email) matchedEmp.email = pmEmail;
+            if (getEmployeeRole(matchedEmp) === 'crew') matchedEmp.role = 'pm';
+          }
           j.pm_name = pmName || null;
           j.pm_email = pmEmail || null;
           j.pm_employee_id = matchedEmp ? matchedEmp.id : (j.pm_employee_id || null);
@@ -4927,6 +5264,7 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         }
       });
 
+      await persistRolesAndPmMeta();
       if (supabaseClient && isOnline && updatedJobs.length) {
         try { await supabaseClient.from('jobs').upsert(updatedJobs); } catch (e) {}
       }
@@ -4939,7 +5277,7 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
     }
 
     // =========================================================================
-    // 4. AUTO-FILL PM EMAIL WHEN JOB IS SELECTED ON ANY PDF FORM
+    // 6. AUTO-FILL PM EMAIL WHEN JOB IS SELECTED ON ANY PDF FORM
     // =========================================================================
     window.handleFillerJobSelect = function(selectedJobName) {
       const emailInp = document.getElementById('fillerRecipientEmail');
@@ -4972,12 +5310,10 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       }
     };
 
-    // Upgrade openFormFiller so any Job dropdown (or field labeled "Job Name" / "Project Name") triggers PM auto-email
     const _baseOpenFormFiller = window.openFormFiller;
     window.openFormFiller = function(templateId) {
       const tpl = formTemplates.find(t => t.id === templateId);
       if (tpl && Array.isArray(tpl.fields)) {
-        // Automatically upgrade any field labeled "Job Name" or "Project" to a 'job' dropdown so crew can pick the job & trigger PM routing
         tpl.fields.forEach(f => {
           if (f.type === 'text' && /\b(job\s*name|project\s*name|job\s*#?)\b/i.test(f.label || '')) {
             f.type = 'job';
@@ -4987,7 +5323,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
 
       if (_baseOpenFormFiller) _baseOpenFormFiller(templateId);
 
-      // Attach onchange listener to all job dropdowns inside the form filler
       if (tpl && Array.isArray(tpl.fields)) {
         tpl.fields.filter(f => f.type === 'job').forEach(f => {
           const sel = document.getElementById(`fill_${f.id}`);
@@ -4999,34 +5334,46 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
     };
 
     // =========================================================================
-    // 5. PROJECT MANAGER PORTAL: DOCS, RECEIPTS, HOURS LOGGED & PAYROLL
+    // 7. PROJECT MANAGER PORTAL: DOCS, RECEIPTS/INVOICES, HOURS & PAYROLL
     // =========================================================================
     async function initPmPortalView() {
       await loadPmPortalData();
       await loadFormTemplatesFromSupabase();
+      injectRoleButtonIntoPmHeader();
 
       const pmSelect = document.getElementById('pmPortalSelectedPm');
       if (!pmSelect) return;
 
-      // Collect unique PM names from jobs + current logged-in user
+      const effRole = getActiveUserEffectiveRole();
+      const loggedInEmp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
+
+      // Collect PM names from both appointed PM users AND job PM assignments
       const pmNamesSet = new Set();
       (state.jobs || []).forEach(j => {
         if (j.pm_name && j.pm_name.trim()) pmNamesSet.add(j.pm_name.trim());
       });
+      (state.employees || []).forEach(e => {
+        if (getEmployeeRole(e) === 'pm' && e.full_name) pmNamesSet.add(e.full_name.trim());
+      });
       const pmNames = Array.from(pmNamesSet).sort();
 
-      const loggedInEmp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
-      const currentUserName = currentRole === 'admin' ? 'ALL' : (loggedInEmp ? loggedInEmp.full_name : 'ALL');
-
-      pmSelect.innerHTML =
-        `<option value="ALL">All Project Managers (${(state.jobs || []).length} Jobs)</option>` +
-        pmNames.map(name => `<option value="${name.replace(/"/g, '&quot;')}">${name}</option>`).join('');
-
-      if (currentUserName !== 'ALL' && pmNames.some(n => n.toLowerCase() === currentUserName.toLowerCase())) {
-        const exact = pmNames.find(n => n.toLowerCase() === currentUserName.toLowerCase());
-        pmSelect.value = exact;
+      // If logged in as a non-Admin Project Manager, default/scope directly to their projects
+      if (effRole !== 'admin' && loggedInEmp) {
+        const myName = loggedInEmp.full_name.trim();
+        pmSelect.innerHTML = `<option value="${myName.replace(/"/g, '&quot;')}">${myName} (My Assigned Projects)</option>`;
+        pmSelect.value = myName;
+        pmSelect.disabled = true;
       } else {
-        pmSelect.value = 'ALL';
+        pmSelect.disabled = false;
+        const previousVal = pmSelect.value;
+        pmSelect.innerHTML =
+          `<option value="ALL">All Project Managers (${(state.jobs || []).length} Jobs)</option>` +
+          pmNames.map(name => `<option value="${name.replace(/"/g, '&quot;')}">${name}</option>`).join('');
+        if (previousVal && (previousVal === 'ALL' || pmNames.includes(previousVal))) {
+          pmSelect.value = previousVal;
+        } else {
+          pmSelect.value = 'ALL';
+        }
       }
 
       handlePmPortalFilterChange();
@@ -5066,35 +5413,57 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       const selectedPm = document.getElementById('pmPortalSelectedPm')?.value || 'ALL';
       const selectedJob = document.getElementById('pmPortalSelectedJob')?.value || 'ALL';
 
-      // Determine the list of job names belonging to this PM / filter
+      // Build lookup sets of allowed Job Names AND Job IDs for the selected PM / Job filter
       const pmJobs = (state.jobs || []).filter(j => {
-        if (selectedJob !== 'ALL') return j.name === selectedJob;
-        if (selectedPm === 'ALL') return true;
-        return (j.pm_name || '').trim().toLowerCase() === selectedPm.trim().toLowerCase();
+        const nameMatch = selectedJob === 'ALL' || (j.name || '').trim().toLowerCase() === selectedJob.trim().toLowerCase();
+        const pmMatch = selectedPm === 'ALL' || (j.pm_name || '').trim().toLowerCase() === selectedPm.trim().toLowerCase();
+        return nameMatch && pmMatch;
       });
-      const allowedJobNames = new Set(pmJobs.map(j => (j.name || '').trim().toLowerCase()));
 
-      const matchesPmJob = jobNameStr => {
-        if (selectedPm === 'ALL' && selectedJob === 'ALL') return true;
-        if (!jobNameStr) return false;
-        return allowedJobNames.has(jobNameStr.trim().toLowerCase());
+      const allowedJobNames = new Set(pmJobs.map(j => (j.name || '').trim().toLowerCase()).filter(Boolean));
+      const allowedJobIds   = new Set(pmJobs.map(j => String(j.id || '').trim().toLowerCase()).filter(Boolean));
+
+      // Also include the explicitly selected job string even if not yet in state.jobs
+      if (selectedJob !== 'ALL') {
+        allowedJobNames.add(selectedJob.trim().toLowerCase());
+      }
+
+      const recordBelongsToFilter = rec => {
+        const info = resolveRecordJobInfo(rec);
+        const rName = (info.jobName || '').trim().toLowerCase();
+        const rId   = (info.jobId || '').trim().toLowerCase();
+
+        // If viewing ALL PMs and ALL Jobs, include any record assigned to a job
+        if (selectedPm === 'ALL' && selectedJob === 'ALL') {
+          return Boolean(rName || rId || (state.jobs || []).length > 0);
+        }
+        if (rId && allowedJobIds.has(rId)) return true;
+        if (rName && allowedJobNames.has(rName)) return true;
+        return false;
       };
 
-      // Filter the 4 datasets for this PM's jobs
+      // 1. Filter Completed PDF Documents
       const docs = (formSubmissions || []).filter(s => {
-        if (matchesPmJob(s.job_name)) return true;
-        // Also check inside answers JSON for any Job Name field
+        if (recordBelongsToFilter(s)) return true;
         if (s.answers && typeof s.answers === 'object') {
-          return Object.values(s.answers).some(v => typeof v === 'string' && matchesPmJob(v));
+          return Object.values(s.answers).some(
+            v => typeof v === 'string' && allowedJobNames.has(v.trim().toLowerCase())
+          );
         }
         return false;
       });
 
-      const receipts = (state.statementLines || []).filter(r => matchesPmJob(r.job_name));
-      const hoursList = (jobTimeEntries || []).filter(t => matchesPmJob(t.job_name));
+      // 2. Filter Statement Lines / Invoices / Receipts linked to the PM's jobs
+      const receipts = (state.statementLines || []).filter(r => recordBelongsToFilter(r));
+
+      // 3. Filter Logged Hours linked to the PM's jobs
+      const hoursList = (jobTimeEntries || []).filter(t => recordBelongsToFilter(t));
 
       // Update Top KPI Cards
-      const totalReceiptSpend = receipts.reduce((sum, r) => sum + (Number(r.amount) || Number(r.ocr_amount) || 0), 0);
+      const totalReceiptSpend = receipts.reduce((sum, r) => {
+        const val = r.amount !== null && r.amount !== undefined && r.amount !== '' ? Number(r.amount) : Number(r.ocr_amount || 0);
+        return sum + (isNaN(val) ? 0 : val);
+      }, 0);
       const totalHours = hoursList.reduce((sum, t) => sum + (Number(t.hours) || 0), 0);
       const totalPayroll = hoursList.reduce((sum, t) => sum + ((Number(t.hours) || 0) * (Number(t.hourly_rate) || 0)), 0);
 
@@ -5115,53 +5484,60 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
               <button onclick="selectMenuFeature('forms')" class="px-3 py-1.5 rounded-xl bg-emerald-600 text-white font-bold text-xs">+ Fill New PDF Form</button>
             </div>
             <div class="space-y-2">
-              ${docs.map(d => `
-                <div class="p-3 rounded-xl bg-slate-900 border border-slate-700 flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div>
-                    <div class="font-bold text-white">${d.template_title || 'Completed PDF'}</div>
-                    <div class="text-[11px] text-slate-400">
-                      Job: <span class="text-emerald-300 font-semibold">${d.job_name || 'Assigned'}</span> •
-                      By: ${d.submitted_by || 'Crew'} •
-                      ${d.created_at ? new Date(d.created_at).toLocaleDateString() : ''}
-                      ${d.recipient_email ? ` • Sent to: ${d.recipient_email}` : ''}
+              ${docs.map(d => {
+                const jInfo = resolveRecordJobInfo(d);
+                return `
+                  <div class="p-3 rounded-xl bg-slate-900 border border-slate-700 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div>
+                      <div class="font-bold text-white">${d.template_title || 'Completed PDF'}</div>
+                      <div class="text-[11px] text-slate-400">
+                        Job: <span class="text-emerald-300 font-semibold">${jInfo.jobName || d.job_name || 'Assigned'}</span> •
+                        By: ${d.submitted_by || 'Crew'} •
+                        ${d.created_at ? new Date(d.created_at).toLocaleDateString() : ''}
+                        ${d.recipient_email ? ` • Sent to: ${d.recipient_email}` : ''}
+                      </div>
+                    </div>
+                    <div class="flex items-center gap-2">
+                      ${d.filled_pdf_url ? `<a href="${d.filled_pdf_url}" target="_blank" rel="noopener" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs">View Signed PDF</a>` : ''}
                     </div>
                   </div>
-                  <div class="flex items-center gap-2">
-                    ${d.filled_pdf_url ? `<a href="${d.filled_pdf_url}" target="_blank" rel="noopener" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs">View Signed PDF</a>` : ''}
-                  </div>
-                </div>
-              `).join('') || `<p class="text-xs text-slate-500 py-4">No completed PDF documents found for the selected PM / Job filter.</p>`}
+                `;
+              }).join('') || `<p class="text-xs text-slate-500 py-4">No completed PDF documents found for the selected PM / Job filter.</p>`}
             </div>
           </div>
         `;
         return;
       }
 
-      // TAB 2: PROJECT RECEIPTS & CREDIT CARD SPEND
+      // TAB 2: PROJECT RECEIPTS, INVOICES & CREDIT CARD SPEND
       if (activePmPortalTab === 'receipts') {
         body.innerHTML = `
           <div class="space-y-3">
             <div class="flex items-center justify-between">
-              <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-400">Project Receipts & Card Charges (${receipts.length})</h2>
-              <span class="text-xs font-mono font-bold text-emerald-300">Total: $${totalReceiptSpend.toFixed(2)}</span>
+              <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-400">Job Invoices, Receipts & Card Charges (${receipts.length})</h2>
+              <span class="text-xs font-mono font-bold text-emerald-300">Job Spend Total: $${totalReceiptSpend.toFixed(2)}</span>
             </div>
             <div class="space-y-2">
               ${receipts.map(r => {
-                const amt = Number(r.amount) || Number(r.ocr_amount) || 0;
+                const amt = r.amount !== null && r.amount !== undefined && r.amount !== '' ? Number(r.amount) : Number(r.ocr_amount || 0);
+                const jInfo = resolveRecordJobInfo(r);
+                const ccLabel = r.cost_code || r.costCode || r.assigned_cost_code || 'Unassigned';
+                const jobObj = (state.jobs || []).find(j => (j.name || '').toLowerCase() === (jInfo.jobName || '').toLowerCase());
+                const pmTag = jobObj && jobObj.pm_name ? ` • PM: ${jobObj.pm_name}` : '';
                 return `
                   <div class="p-3 rounded-xl bg-slate-900 border border-slate-700 flex flex-wrap items-center justify-between gap-2 text-xs">
                     <div>
-                      <div class="font-bold text-white">${r.merchant || r.ocr_merchant || 'Vendor Receipt'} — <span class="text-emerald-400 font-mono">$${amt.toFixed(2)}</span></div>
+                      <div class="font-bold text-white">${r.merchant || r.ocr_merchant || 'Vendor Receipt / Invoice'} — <span class="text-emerald-400 font-mono">$${(isNaN(amt) ? 0 : amt).toFixed(2)}</span></div>
                       <div class="text-[11px] text-slate-400">
-                        Job: <span class="text-indigo-300 font-semibold">${r.job_name || '--'}</span> •
-                        Cost Code: <span class="text-amber-300 font-mono">${r.cost_code || 'Unassigned'}</span> •
-                        Card *${r.card_last4 || '----'} • ${r.post_date || ''}
+                        Job: <span class="text-indigo-300 font-semibold">${jInfo.jobName || '--'}</span> •
+                        Cost Code: <span class="text-amber-300 font-mono">${ccLabel}</span> •
+                        Card •••• ${r.card_last4 || '----'} • ${r.post_date || r.ocr_date || ''}${pmTag}
                       </div>
                     </div>
-                    ${r.receipt_image ? `<button onclick="openFullImagePreview('${r.id}')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/40 font-bold text-xs">View Receipt Photo</button>` : `<span class="text-[11px] text-amber-400">Missing Photo</span>`}
+                    ${r.receipt_image ? `<button onclick="openFullImagePreview('${r.id}')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/40 font-bold text-xs">View Receipt / Invoice</button>` : `<span class="text-[11px] text-amber-400">No Photo Attached</span>`}
                   </div>
                 `;
-              }).join('') || `<p class="text-xs text-slate-500 py-4">No receipts coded to the selected PM / Job filter yet.</p>`}
+              }).join('') || `<p class="text-xs text-slate-500 py-4">No receipts or invoices linked to the selected PM / Job filter yet.</p>`}
             </div>
           </div>
         `;
@@ -5203,7 +5579,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
 
       // TAB 4: JOB PAYROLL SUMMARY
       if (activePmPortalTab === 'payroll') {
-        // Group hours & labor cost by Employee
         const byEmp = {};
         hoursList.forEach(t => {
           const key = t.employee_name || 'Crew';
