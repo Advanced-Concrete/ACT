@@ -4703,15 +4703,45 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
     // =========================================================================
     let jobTimeEntries = [];
     let activePmPortalTab = 'docs';
+    let adminViewingPersonalCard = false;
 
     const USER_ROLE_LABELS = {
-      admin:      { label: 'Admin',           badgeClass: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' },
-      pm:         { label: 'Project Manager', badgeClass: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40' },
-      supervisor: { label: 'Supervisor',      badgeClass: 'bg-amber-500/20 text-amber-300 border-amber-500/40' },
-      crew:       { label: 'Crew / User',     badgeClass: 'bg-slate-700/60 text-slate-300 border-slate-600' }
+      admin:      { label: 'Administrator',   short: 'Admin',      badgeClass: 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40', textClass: 'text-emerald-400' },
+      pm:         { label: 'Project Manager', short: 'PM',         badgeClass: 'bg-indigo-500/20 text-indigo-300 border-indigo-500/40',   textClass: 'text-indigo-400' },
+      supervisor: { label: 'Supervisor',      short: 'Supervisor', badgeClass: 'bg-amber-500/20 text-amber-300 border-amber-500/40',     textClass: 'text-amber-400' },
+      crew:       { label: 'Crew Member',     short: 'Crew',       badgeClass: 'bg-slate-700/60 text-slate-300 border-slate-600',        textClass: 'text-slate-400' }
     };
 
+    // Synchronously overlay saved roles & PM assignments from localStorage so login is instant
+    function applyStoredRolesSync() {
+      try {
+        const raw = localStorage.getItem('fieldops_roles_pm_meta');
+        if (!raw) return;
+        const meta = JSON.parse(raw);
+        if (meta.empRoles && Array.isArray(state?.employees)) {
+          state.employees.forEach(e => {
+            const saved = meta.empRoles[e.id] || meta.empRoles[e.full_name];
+            if (saved) {
+              if (saved.role) e.role = saved.role;
+              if (saved.email) e.email = saved.email;
+            }
+          });
+        }
+        if (meta.jobPms && Array.isArray(state?.jobs)) {
+          state.jobs.forEach(j => {
+            const saved = meta.jobPms[j.id] || meta.jobPms[j.name];
+            if (saved) {
+              if (saved.pm_name) j.pm_name = saved.pm_name;
+              if (saved.pm_email) j.pm_email = saved.pm_email;
+              if (saved.pm_employee_id) j.pm_employee_id = saved.pm_employee_id;
+            }
+          });
+        }
+      } catch (e) {}
+    }
+
     function getEmployeeRole(emp) {
+      applyStoredRolesSync();
       if (!emp) return 'crew';
       const r = (emp.role || '').toLowerCase().trim();
       if (['admin', 'pm', 'supervisor', 'crew'].includes(r)) return r;
@@ -4720,11 +4750,13 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
     }
 
     function getActiveUserEffectiveRole() {
+      applyStoredRolesSync();
+      if (typeof activeCrewEmployeeId !== 'undefined' && activeCrewEmployeeId) {
+        const emp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
+        if (emp) return getEmployeeRole(emp);
+      }
       if (typeof currentRole !== 'undefined' && currentRole === 'admin') return 'admin';
-      const adminPagesEl = document.getElementById('drawerAdminPages');
-      if (adminPagesEl && !adminPagesEl.classList.contains('hidden')) return 'admin';
-      const emp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
-      return getEmployeeRole(emp);
+      return 'crew';
     }
 
     // Universal resolver: finds the Job Name & Job ID on any statement line / receipt / doc
@@ -4762,15 +4794,10 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
 
     // 1. Load & Sync Job Time Entries + Role/PM Cloud Metadata Backup
     async function loadPmPortalData() {
+      applyStoredRolesSync();
       try {
         const cached = localStorage.getItem('fieldops_job_time_entries');
         if (cached) jobTimeEntries = JSON.parse(cached);
-      } catch (e) {}
-
-      let cloudMeta = null;
-      try {
-        const localMeta = localStorage.getItem('fieldops_roles_pm_meta');
-        if (localMeta) cloudMeta = JSON.parse(localMeta);
       } catch (e) {}
 
       if (supabaseClient && isOnline) {
@@ -4784,8 +4811,7 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
 
           if (!metaRes.error && metaRes.data?.ocr_api_key) {
             try {
-              cloudMeta = JSON.parse(metaRes.data.ocr_api_key);
-              localStorage.setItem('fieldops_roles_pm_meta', JSON.stringify(cloudMeta));
+              localStorage.setItem('fieldops_roles_pm_meta', metaRes.data.ocr_api_key);
             } catch (e) {}
           }
           if (!jobsRes.error && jobsRes.data?.length) {
@@ -4801,35 +4827,16 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         } catch (e) {}
       }
 
-      if (cloudMeta) {
-        if (cloudMeta.empRoles && Array.isArray(state.employees)) {
-          state.employees.forEach(e => {
-            const saved = cloudMeta.empRoles[e.id] || cloudMeta.empRoles[e.full_name];
-            if (saved) {
-              if (saved.role) e.role = saved.role;
-              if (saved.email) e.email = saved.email;
-            }
-          });
-        }
-        if (cloudMeta.jobPms && Array.isArray(state.jobs)) {
-          state.jobs.forEach(j => {
-            const saved = cloudMeta.jobPms[j.id] || cloudMeta.jobPms[j.name];
-            if (saved) {
-              if (saved.pm_name) j.pm_name = saved.pm_name;
-              if (saved.pm_email) j.pm_email = saved.pm_email;
-              if (saved.pm_employee_id) j.pm_employee_id = saved.pm_employee_id;
-            }
-          });
-        }
-      }
+      applyStoredRolesSync();
       refreshRoleUiVisibility();
     }
 
     async function persistRolesAndPmMeta() {
       const empRoles = {};
       (state.employees || []).forEach(e => {
-        empRoles[e.id] = { role: getEmployeeRole(e), email: e.email || '' };
-        empRoles[e.full_name] = { role: getEmployeeRole(e), email: e.email || '' };
+        const r = (e.role || '').toLowerCase().trim() || getEmployeeRole(e);
+        empRoles[e.id] = { role: r, email: e.email || '' };
+        empRoles[e.full_name] = { role: r, email: e.email || '' };
       });
       const jobPms = {};
       (state.jobs || []).forEach(j => {
@@ -4853,14 +4860,38 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       }
     }
 
-    // 2. Self-Healing Menu Buttons & Dynamic Role Visibility (Runs on Login & Menu Open)
+    // 2. Move Feature Buttons Outside Hidden Admin Wrapper & Apply Appointed Role Privileges
     function ensureMenuButtonsExist() {
-      const formsBtn = document.getElementById('menuFeatForms') || document.getElementById('menuFeatReceipts');
-      if (!formsBtn || !formsBtn.parentNode) return;
+      const receiptsBtn = document.getElementById('menuFeatReceipts');
+      if (!receiptsBtn || !receiptsBtn.parentNode) return;
+      const mainFeaturesContainer = receiptsBtn.parentNode;
 
-      // Guarantee PM Project Hub button exists right under Field Forms (PDF)
-      if (!document.getElementById('menuFeatPmPortal')) {
-        const pmBtn = document.createElement('button');
+      // Move Field Forms (PDF) out of any hidden admin wrapper so Crew, Supervisors, PMs & Admins can all use it
+      let formsBtn = document.getElementById('menuFeatForms');
+      if (formsBtn && formsBtn.parentNode !== mainFeaturesContainer) {
+        mainFeaturesContainer.insertBefore(formsBtn, receiptsBtn.nextSibling);
+      }
+
+      // Add "My Personal Card" shortcut for Appointed Admins who also have a personal company card (e.g. Jake Textor •••• 8255)
+      if (!document.getElementById('menuFeatMyPersonalCard')) {
+        const myCardBtn = document.createElement('button');
+        myCardBtn.id = 'menuFeatMyPersonalCard';
+        myCardBtn.setAttribute('onclick', 'openMyPersonalCardView()');
+        myCardBtn.className = 'hidden w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition';
+        myCardBtn.innerHTML = `
+          <span class="flex items-center gap-2.5">
+            <svg class="w-4 h-4 text-emerald-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>
+            <span id="menuMyCardLabel">My Personal Card</span>
+          </span>
+          <span class="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] font-mono">Card</span>
+        `;
+        mainFeaturesContainer.insertBefore(myCardBtn, receiptsBtn.nextSibling);
+      }
+
+      // Guarantee PM Project Hub button sits in the main visible FEATURES list
+      let pmBtn = document.getElementById('menuFeatPmPortal');
+      if (!pmBtn) {
+        pmBtn = document.createElement('button');
         pmBtn.id = 'menuFeatPmPortal';
         pmBtn.setAttribute('onclick', "selectMenuFeature('pm_portal')");
         pmBtn.className = 'w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition';
@@ -4871,13 +4902,15 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
           </span>
           <span id="pmMenuBadge" class="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-mono">PM</span>
         `;
-        formsBtn.parentNode.insertBefore(pmBtn, formsBtn.nextSibling);
+      }
+      if (pmBtn.parentNode !== mainFeaturesContainer) {
+        mainFeaturesContainer.appendChild(pmBtn);
       }
 
-      // Guarantee User Levels & Roles button exists right under PM Project Hub
-      const pmMenuBtn = document.getElementById('menuFeatPmPortal');
-      if (pmMenuBtn && !document.getElementById('menuFeatUserRoles')) {
-        const roleBtn = document.createElement('button');
+      // Guarantee User Levels & Roles button sits in the main visible FEATURES list
+      let roleBtn = document.getElementById('menuFeatUserRoles');
+      if (!roleBtn) {
+        roleBtn = document.createElement('button');
         roleBtn.id = 'menuFeatUserRoles';
         roleBtn.setAttribute('onclick', 'closeSideMenu(); openUserRolesManagerModal();');
         roleBtn.className = 'w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition';
@@ -4888,53 +4921,153 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
           </span>
           <span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-mono">Admin</span>
         `;
-        pmMenuBtn.parentNode.insertBefore(roleBtn, pmMenuBtn.nextSibling);
+      }
+      if (roleBtn.parentNode !== mainFeaturesContainer) {
+        mainFeaturesContainer.appendChild(roleBtn);
       }
     }
+
+    // Switch an appointed Admin (like Jake Textor) to their personal card receipt uploader
+    window.openMyPersonalCardView = function() {
+      adminViewingPersonalCard = true;
+      document.getElementById('viewPmPortal')?.classList.add('hidden');
+      document.getElementById('viewOtherModule')?.classList.add('hidden');
+      document.getElementById('viewAdmin')?.classList.add('hidden');
+      document.getElementById('viewCrew')?.classList.remove('hidden');
+      const emp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
+      document.getElementById('topBarPageTitle').textContent = emp ? `My Card — ${emp.full_name}` : 'My Card & Receipts';
+      closeSideMenu();
+      if (typeof renderCrewView === 'function') renderCrewView();
+    };
 
     function refreshRoleUiVisibility() {
       ensureMenuButtonsExist();
       const effRole = getActiveUserEffectiveRole();
       const emp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
+      const roleInfo = USER_ROLE_LABELS[effRole] || USER_ROLE_LABELS.crew;
 
+      // If a named employee (like Jake Textor) is appointed as Admin, promote currentRole to 'admin'
+      // so built-in Admin pages (Statement Reconciler, Jobs, Employees, CSV Upload, PDF Builder) unlock!
+      if (effRole === 'admin' && typeof currentRole !== 'undefined' && currentRole === 'crew') {
+        currentRole = 'admin';
+      }
+
+      // 1. Update Side Drawer Role Subtitle ("Crew Member" -> "Administrator" / "Project Manager" / "Supervisor")
+      const drawer = document.getElementById('sideMenuDrawer');
+      if (drawer) {
+        drawer.querySelectorAll('p, div, span').forEach(el => {
+          const txt = (el.textContent || '').trim();
+          if (
+            el.dataset.roleSubtitle === '1' ||
+            txt === 'Crew Member' ||
+            txt === 'Admin Portal' ||
+            txt === 'Administrator' ||
+            txt === 'Project Manager' ||
+            txt === 'Supervisor'
+          ) {
+            if (el.children.length === 0) {
+              el.dataset.roleSubtitle = '1';
+              el.textContent = emp ? roleInfo.label : (effRole === 'admin' ? 'Admin Portal' : roleInfo.label);
+              el.className = `text-[11px] font-semibold ${roleInfo.textClass}`;
+            }
+          }
+        });
+
+        // Also make sure the Drawer Header Title shows the logged-in person's name (e.g. "Jake Textor")
+        const drawerTitleEl = document.getElementById('drawerUserName') || document.getElementById('sideMenuUserName');
+        if (drawerTitleEl && emp) {
+          drawerTitleEl.textContent = emp.full_name;
+        }
+      }
+
+      // 2. Update Top-Right Active User Badge to include Role Title (e.g. "Admin: Jake Textor" or "PM: Eddie Varner")
+      const topUserBadge = document.getElementById('activeUserBadgeText') || document.getElementById('topBarUserLabel');
+      if (topUserBadge && emp) {
+        topUserBadge.textContent = effRole === 'crew' ? emp.full_name : `${roleInfo.short}: ${emp.full_name}`;
+      }
+
+      // 3. Show/Hide Admin Sections in the Side Menu (Admin Pages, Cloud/Sage/OCR Tools, Reset App Data)
+      const isAdmin = (effRole === 'admin');
+      ['drawerAdminFutureFeatures', 'drawerAdminPages', 'drawerAdminTools', 'btnDrawerResetData'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.classList.toggle('hidden', !isAdmin);
+      });
+
+      // Also locate Admin Pages & Tools containers dynamically by their buttons in case IDs differ
+      if (drawer) {
+        const sampleAdminBtn = drawer.querySelector('button[onclick*="openAdminPage"]');
+        if (sampleAdminBtn && sampleAdminBtn.parentElement) {
+          const adminSectionWrapper = sampleAdminBtn.parentElement.parentElement || sampleAdminBtn.parentElement;
+          adminSectionWrapper.classList.toggle('hidden', !isAdmin);
+        }
+        const resetBtn = drawer.querySelector('button[onclick*="resetAppData"], button[onclick*="confirmReset"]');
+        if (resetBtn) resetBtn.classList.toggle('hidden', !isAdmin);
+      }
+
+      // 4. Show "My Personal Card (•••• 8255)" button if an appointed Admin logged in with their personal profile
+      const myCardBtn = document.getElementById('menuFeatMyPersonalCard');
+      if (myCardBtn) {
+        if (isAdmin && emp) {
+          const empCards = (state.cards || []).filter(c => c.employee_id === emp.id);
+          const last4 = empCards.length ? ` (•••• ${empCards[0].last4})` : '';
+          const lbl = document.getElementById('menuMyCardLabel');
+          if (lbl) lbl.textContent = `My Personal Card${last4}`;
+          myCardBtn.classList.remove('hidden');
+        } else {
+          myCardBtn.classList.add('hidden');
+        }
+      }
+
+      // 5. Show/Hide PM Project Hub (Visible to Admin, PM, Supervisor, or anyone assigned as PM on a job)
       const isAssignedPmOnAnyJob = emp && (state.jobs || []).some(
         j => (j.pm_name || '').trim().toLowerCase() === (emp.full_name || '').trim().toLowerCase()
       );
-
       const pmBtn = document.getElementById('menuFeatPmPortal');
       if (pmBtn) {
-        const canSeePmHub = (effRole === 'admin' || effRole === 'pm' || isAssignedPmOnAnyJob);
+        const canSeePmHub = (effRole === 'admin' || effRole === 'pm' || effRole === 'supervisor' || isAssignedPmOnAnyJob);
         pmBtn.classList.toggle('hidden', !canSeePmHub);
+        const badge = document.getElementById('pmMenuBadge');
+        if (badge) badge.textContent = effRole === 'supervisor' ? 'Supv' : 'PM';
       }
 
+      // 6. Show/Hide User Levels & Roles (Visible to Admin)
       const roleMenuBtn = document.getElementById('menuFeatUserRoles');
       if (roleMenuBtn) {
-        roleMenuBtn.classList.toggle('hidden', effRole !== 'admin');
+        roleMenuBtn.classList.toggle('hidden', !isAdmin);
       }
 
-      const roleBadge = document.getElementById('activeUserBadgeText') || document.getElementById('topBarUserLabel');
-      if (roleBadge && effRole !== 'admin' && emp) {
-        const rInfo = USER_ROLE_LABELS[effRole] || USER_ROLE_LABELS.crew;
-        roleBadge.textContent = `${rInfo.label}: ${emp.full_name}`;
+      // 7. Ensure Field Forms (PDF) is ALWAYS visible to all logged-in users (Crew, Supervisor, PM, Admin)
+      const formsBtn = document.getElementById('menuFeatForms');
+      if (formsBtn) {
+        formsBtn.classList.remove('hidden');
       }
     }
 
-    // Hook openSideMenu, renderAll, and login transitions so menu items ALWAYS update when logging in
+    // Hook openSideMenu, renderAll, and login transitions so role UI updates immediately on login
     const _baseOpenSideMenu = window.openSideMenu;
     window.openSideMenu = function() {
       refreshRoleUiVisibility();
       if (_baseOpenSideMenu) _baseOpenSideMenu();
+      refreshRoleUiVisibility();
     };
 
     const _baseRenderAll = window.renderAll;
     window.renderAll = function() {
+      refreshRoleUiVisibility();
       if (_baseRenderAll) _baseRenderAll();
       refreshRoleUiVisibility();
+      // If an appointed Admin clicked "My Personal Card", keep their personal card view open
+      if (adminViewingPersonalCard && getActiveUserEffectiveRole() === 'admin' && activeCrewEmployeeId) {
+        document.getElementById('viewAdmin')?.classList.add('hidden');
+        document.getElementById('viewCrew')?.classList.remove('hidden');
+      }
     };
 
-    // 3. Extend selectMenuFeature so Admins, PMs, and Supervisors can navigate cleanly
+    // 3. Extend selectMenuFeature so Admins, PMs, Supervisors, and Crew can navigate cleanly
     const _baseSelectMenuFeature = window.selectMenuFeature;
     window.selectMenuFeature = function(featureKey) {
+      adminViewingPersonalCard = false;
+      refreshRoleUiVisibility();
       const pmSection = document.getElementById('viewPmPortal');
       if (pmSection) pmSection.classList.add('hidden');
 
@@ -4945,11 +5078,11 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       );
 
       if (featureKey === 'pm_portal') {
-        if (effRole !== 'admin' && effRole !== 'pm' && !isAssignedPm) {
+        if (effRole !== 'admin' && effRole !== 'pm' && effRole !== 'supervisor' && !isAssignedPm) {
           closeSideMenu();
-          return showSimpleToast('PM Project Hub requires Project Manager or Admin level', true);
+          return showSimpleToast('PM Project Hub requires PM, Supervisor, or Admin level', true);
         }
-        document.getElementById('topBarPageTitle').textContent = 'PM Project Hub';
+        document.getElementById('topBarPageTitle').textContent = effRole === 'supervisor' ? 'Supervisor Job Hub' : 'PM Project Hub';
         document.getElementById('viewCrew')?.classList.add('hidden');
         document.getElementById('viewAdmin')?.classList.add('hidden');
         document.getElementById('viewOtherModule')?.classList.add('hidden');
@@ -4958,12 +5091,32 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         initPmPortalView();
         return;
       }
+
+      if (featureKey === 'forms') {
+        document.getElementById('topBarPageTitle').textContent = 'Field Forms (PDF)';
+        document.getElementById('viewCrew')?.classList.add('hidden');
+        document.getElementById('viewAdmin')?.classList.add('hidden');
+        document.getElementById('viewOtherModule')?.classList.remove('hidden');
+        document.getElementById('otherModulePlaceholderCard')?.classList.add('hidden');
+        document.getElementById('fieldFormsWorkspace')?.classList.remove('hidden');
+        const adminTabBtn = document.getElementById('btnFormsAdminTab');
+        if (adminTabBtn) adminTabBtn.classList.toggle('hidden', effRole !== 'admin');
+        showFormsSubView('list');
+        loadFormTemplatesFromSupabase();
+        closeSideMenu();
+        return;
+      }
+
       if (_baseSelectMenuFeature) _baseSelectMenuFeature(featureKey);
       refreshRoleUiVisibility();
     };
 
     const _baseOpenAdminPage = window.openAdminPage;
     window.openAdminPage = function(pageKey) {
+      adminViewingPersonalCard = false;
+      if (getActiveUserEffectiveRole() === 'admin') {
+        currentRole = 'admin';
+      }
       document.getElementById('viewPmPortal')?.classList.add('hidden');
       if (_baseOpenAdminPage) _baseOpenAdminPage(pageKey);
       refreshRoleUiVisibility();
@@ -4973,12 +5126,13 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
     };
 
     window.addEventListener('DOMContentLoaded', () => {
+      applyStoredRolesSync();
       setTimeout(async () => {
         await loadPmPortalData();
         hookNewJobInputsForPmPrompt();
         injectRoleButtonIntoPmHeader();
         refreshRoleUiVisibility();
-      }, 600);
+      }, 400);
     });
 
     function injectRoleButtonIntoPmHeader() {
@@ -5008,13 +5162,13 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       document.getElementById('modalBody').innerHTML = `
         <div class="space-y-3 text-xs">
           <p class="text-slate-400 leading-relaxed">
-            Appoint users to <strong>Admin</strong>, <strong>Project Manager</strong>, <strong>Supervisor</strong>, or <strong>Crew / User</strong>. Project Managers automatically appear in Job PM selectors and can access the PM Project Hub for their assigned jobs.
+            Appoint users to <strong>Admin</strong>, <strong>Project Manager</strong>, <strong>Supervisor</strong>, or <strong>Crew / User</strong>. Logging in as that user automatically unlocks their role's workspace and menu options.
           </p>
 
           <div class="flex flex-wrap gap-1.5 pb-1">
-            <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.admin.badgeClass}">Admin: Full Control</span>
+            <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.admin.badgeClass}">Admin: Full Control + Own Card</span>
             <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.pm.badgeClass}">Project Manager: PM Hub & Job Docs/Spend</span>
-            <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.supervisor.badgeClass}">Supervisor: Field Lead</span>
+            <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.supervisor.badgeClass}">Supervisor: Field Lead & Hours</span>
             <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.crew.badgeClass}">Crew / User: Card & Forms</span>
           </div>
 
@@ -5379,6 +5533,10 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       const effRole = getActiveUserEffectiveRole();
       const loggedInEmp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
 
+      // Hide Admin-only Role Manager button inside PM Hub for non-admins
+      const roleHubBtn = document.getElementById('btnOpenRolesModalInHub');
+      if (roleHubBtn) roleHubBtn.classList.toggle('hidden', effRole !== 'admin');
+
       const pmNamesSet = new Set();
       (state.jobs || []).forEach(j => {
         if (j.pm_name && j.pm_name.trim()) pmNamesSet.add(j.pm_name.trim());
@@ -5388,7 +5546,8 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       });
       const pmNames = Array.from(pmNamesSet).sort();
 
-      if (effRole !== 'admin' && loggedInEmp) {
+      // Project Managers default/lock to their own assigned jobs; Admins & Supervisors can filter across jobs
+      if (effRole === 'pm' && loggedInEmp) {
         const myName = loggedInEmp.full_name.trim();
         pmSelect.innerHTML = `<option value="${myName.replace(/"/g, '&quot;')}">${myName} (My Assigned Projects)</option>`;
         pmSelect.value = myName;
