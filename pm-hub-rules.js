@@ -387,6 +387,72 @@
       }
     }
 
+    // Hook loadStateFromDB so Supabase pulls never wipe out saved User Roles or Job PMs
+    const _baseLoadStateFromDB = window.loadStateFromDB;
+    if (typeof _baseLoadStateFromDB === 'function') {
+      window.loadStateFromDB = async function() {
+        const loaded = await _baseLoadStateFromDB.apply(this, arguments);
+        setTimeout(async () => {
+          applyStoredRolesSync();
+          await loadPmPortalData();
+          refreshRoleUiVisibility();
+        }, 50);
+        return loaded;
+      };
+    }
+
+    // Hook updateTopBarIndicators so app-core.js never hides Admin/PM menus for appointed users
+    const _baseUpdateTopBarIndicators = window.updateTopBarIndicators;
+    if (typeof _baseUpdateTopBarIndicators === 'function') {
+      window.updateTopBarIndicators = function() {
+        applyStoredRolesSync();
+        if (getActiveUserEffectiveRole() === 'admin' && typeof currentRole !== 'undefined' && currentRole === 'crew') {
+          currentRole = 'admin';
+        }
+        _baseUpdateTopBarIndicators.apply(this, arguments);
+        refreshRoleUiVisibility();
+      };
+    }
+
+    // Hook handleLoginSubmit so logging in as an appointed Admin, PM, or Supervisor immediately applies their role
+    const _baseHandleLoginSubmit = window.handleLoginSubmit;
+    if (typeof _baseHandleLoginSubmit === 'function') {
+      window.handleLoginSubmit = function(event) {
+        applyStoredRolesSync();
+        const selectedUser = document.getElementById('loginUserSelect')?.value;
+        if (selectedUser === 'ADMIN') {
+          activeCrewEmployeeId = null;
+        }
+        _baseHandleLoginSubmit.apply(this, arguments);
+
+        if (selectedUser && selectedUser !== 'ADMIN') {
+          const emp = (state.employees || []).find(e => e.id === selectedUser);
+          const effRole = getEmployeeRole(emp);
+          const rInfo = USER_ROLE_LABELS[effRole] || USER_ROLE_LABELS.crew;
+
+          const drawerRoleEl = document.getElementById('drawerUserRole');
+          if (drawerRoleEl) {
+            drawerRoleEl.textContent = rInfo.label;
+            drawerRoleEl.className = `text-[11px] font-semibold ${rInfo.textClass}`;
+          }
+
+          if (effRole === 'admin') {
+            currentRole = 'admin';
+            adminViewingPersonalCard = false;
+            refreshRoleUiVisibility();
+            openAdminPage('reconcile');
+          } else if (effRole === 'pm') {
+            refreshRoleUiVisibility();
+            selectMenuFeature('pm_portal');
+          } else {
+            refreshRoleUiVisibility();
+          }
+        } else {
+          refreshRoleUiVisibility();
+        }
+      };
+    }
+
     const _baseOpenSideMenu = window.openSideMenu;
     window.openSideMenu = function() {
       refreshRoleUiVisibility();
@@ -419,7 +485,6 @@
         j => (j.pm_name || '').trim().toLowerCase() === (emp.full_name || '').trim().toLowerCase()
       );
 
-      // Route 'pm_portal', 'timecards', and 'payroll' directly into the PM Project Hub tabs!
       if (featureKey === 'pm_portal' || featureKey === 'timecards' || featureKey === 'payroll') {
         if (effRole !== 'admin' && effRole !== 'pm' && effRole !== 'supervisor' && !isAssignedPm) {
           closeSideMenu();
@@ -471,16 +536,18 @@
       }
     };
 
-    window.addEventListener('DOMContentLoaded', () => {
+    // Run immediately even if DOMContentLoaded already fired
+    (function initRolesAndPmModuleNow() {
       applyStoredRolesSync();
+      ensureMenuButtonsExist();
+      refreshRoleUiVisibility();
       setTimeout(async () => {
         await loadPmPortalData();
         hookNewJobInputsForPmPrompt();
         injectRoleButtonIntoPmHeader();
         refreshRoleUiVisibility();
-      }, 400);
-    });
-
+      }, 300);
+    })();
     function injectRoleButtonIntoPmHeader() {
       const pmSection = document.getElementById('viewPmPortal');
       if (!pmSection || document.getElementById('btnOpenRolesModalInHub')) return;
