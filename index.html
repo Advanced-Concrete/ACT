@@ -4715,13 +4715,14 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       if (!emp) return 'crew';
       const r = (emp.role || '').toLowerCase().trim();
       if (['admin', 'pm', 'supervisor', 'crew'].includes(r)) return r;
-      // Default Jake Textor to admin if not explicitly set yet
       if ((emp.full_name || '').toLowerCase().includes('jake textor')) return 'admin';
       return 'crew';
     }
 
     function getActiveUserEffectiveRole() {
-      if (currentRole === 'admin') return 'admin';
+      if (typeof currentRole !== 'undefined' && currentRole === 'admin') return 'admin';
+      const adminPagesEl = document.getElementById('drawerAdminPages');
+      if (adminPagesEl && !adminPagesEl.classList.contains('hidden')) return 'admin';
       const emp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
       return getEmployeeRole(emp);
     }
@@ -4800,7 +4801,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         } catch (e) {}
       }
 
-      // Apply backed-up roles & PM assignments so nothing is ever lost
       if (cloudMeta) {
         if (cloudMeta.empRoles && Array.isArray(state.employees)) {
           state.employees.forEach(e => {
@@ -4853,52 +4853,84 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       }
     }
 
-    // 2. Role-Based Navigation & Menu Visibility
+    // 2. Self-Healing Menu Buttons & Dynamic Role Visibility (Runs on Login & Menu Open)
+    function ensureMenuButtonsExist() {
+      const formsBtn = document.getElementById('menuFeatForms') || document.getElementById('menuFeatReceipts');
+      if (!formsBtn || !formsBtn.parentNode) return;
+
+      // Guarantee PM Project Hub button exists right under Field Forms (PDF)
+      if (!document.getElementById('menuFeatPmPortal')) {
+        const pmBtn = document.createElement('button');
+        pmBtn.id = 'menuFeatPmPortal';
+        pmBtn.setAttribute('onclick', "selectMenuFeature('pm_portal')");
+        pmBtn.className = 'w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition';
+        pmBtn.innerHTML = `
+          <span class="flex items-center gap-2.5">
+            <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+            PM Project Hub
+          </span>
+          <span id="pmMenuBadge" class="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-mono">PM</span>
+        `;
+        formsBtn.parentNode.insertBefore(pmBtn, formsBtn.nextSibling);
+      }
+
+      // Guarantee User Levels & Roles button exists right under PM Project Hub
+      const pmMenuBtn = document.getElementById('menuFeatPmPortal');
+      if (pmMenuBtn && !document.getElementById('menuFeatUserRoles')) {
+        const roleBtn = document.createElement('button');
+        roleBtn.id = 'menuFeatUserRoles';
+        roleBtn.setAttribute('onclick', 'closeSideMenu(); openUserRolesManagerModal();');
+        roleBtn.className = 'w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition';
+        roleBtn.innerHTML = `
+          <span class="flex items-center gap-2.5">
+            <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            User Levels & Roles
+          </span>
+          <span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-mono">Admin</span>
+        `;
+        pmMenuBtn.parentNode.insertBefore(roleBtn, pmMenuBtn.nextSibling);
+      }
+    }
+
     function refreshRoleUiVisibility() {
+      ensureMenuButtonsExist();
       const effRole = getActiveUserEffectiveRole();
       const emp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
 
-      // Show/hide PM Project Hub button in side drawer (Visible to Admin & PM, or if user is assigned as PM on any job)
       const isAssignedPmOnAnyJob = emp && (state.jobs || []).some(
         j => (j.pm_name || '').trim().toLowerCase() === (emp.full_name || '').trim().toLowerCase()
       );
+
       const pmBtn = document.getElementById('menuFeatPmPortal');
       if (pmBtn) {
         const canSeePmHub = (effRole === 'admin' || effRole === 'pm' || isAssignedPmOnAnyJob);
         pmBtn.classList.toggle('hidden', !canSeePmHub);
       }
 
-      // Inject "User Levels & Roles" button into side menu for Admins if not already present
-      const drawer = document.getElementById('sideMenuDrawer');
-      if (drawer && !document.getElementById('menuFeatUserRoles')) {
-        const pmMenuBtn = document.getElementById('menuFeatPmPortal');
-        if (pmMenuBtn && pmMenuBtn.parentNode) {
-          const roleBtn = document.createElement('button');
-          roleBtn.id = 'menuFeatUserRoles';
-          roleBtn.setAttribute('onclick', 'closeSideMenu(); openUserRolesManagerModal();');
-          roleBtn.className = 'w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition';
-          roleBtn.innerHTML = `
-            <span class="flex items-center gap-2.5">
-              <svg class="w-4 h-4 text-amber-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
-              User Levels & Roles
-            </span>
-            <span class="px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 text-[10px] font-mono">Admin</span>
-          `;
-          pmMenuBtn.parentNode.insertBefore(roleBtn, pmMenuBtn.nextSibling);
-        }
-      }
       const roleMenuBtn = document.getElementById('menuFeatUserRoles');
       if (roleMenuBtn) {
         roleMenuBtn.classList.toggle('hidden', effRole !== 'admin');
       }
 
-      // Update top-right user role pill to show PM / Supervisor / Admin title
       const roleBadge = document.getElementById('activeUserBadgeText') || document.getElementById('topBarUserLabel');
-      if (roleBadge && currentRole !== 'admin' && emp) {
+      if (roleBadge && effRole !== 'admin' && emp) {
         const rInfo = USER_ROLE_LABELS[effRole] || USER_ROLE_LABELS.crew;
         roleBadge.textContent = `${rInfo.label}: ${emp.full_name}`;
       }
     }
+
+    // Hook openSideMenu, renderAll, and login transitions so menu items ALWAYS update when logging in
+    const _baseOpenSideMenu = window.openSideMenu;
+    window.openSideMenu = function() {
+      refreshRoleUiVisibility();
+      if (_baseOpenSideMenu) _baseOpenSideMenu();
+    };
+
+    const _baseRenderAll = window.renderAll;
+    window.renderAll = function() {
+      if (_baseRenderAll) _baseRenderAll();
+      refreshRoleUiVisibility();
+    };
 
     // 3. Extend selectMenuFeature so Admins, PMs, and Supervisors can navigate cleanly
     const _baseSelectMenuFeature = window.selectMenuFeature;
@@ -4934,6 +4966,7 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
     window.openAdminPage = function(pageKey) {
       document.getElementById('viewPmPortal')?.classList.add('hidden');
       if (_baseOpenAdminPage) _baseOpenAdminPage(pageKey);
+      refreshRoleUiVisibility();
       if (pageKey === 'jobs') {
         setTimeout(checkUnassignedJobsForPmPrompt, 200);
       }
@@ -4944,6 +4977,7 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         await loadPmPortalData();
         hookNewJobInputsForPmPrompt();
         injectRoleButtonIntoPmHeader();
+        refreshRoleUiVisibility();
       }, 600);
     });
 
@@ -5029,7 +5063,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         if (rSel) e.role = rSel.value;
         if (emInp) e.email = emInp.value.trim() || null;
 
-        // If this employee is already assigned as PM on any job and we just added/updated their email, sync it to those jobs
         if (e.email) {
           (state.jobs || []).forEach(j => {
             if ((j.pm_name || '').trim().toLowerCase() === (e.full_name || '').trim().toLowerCase() && !j.pm_email) {
@@ -5089,7 +5122,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         emailInp.value = emp.email;
         return;
       }
-      // Or look up email from an existing job assigned to this same PM
       const existingJobWithPm = (state.jobs || []).find(
         j => (j.pm_name || '').toLowerCase() === (selectedName || '').toLowerCase() && j.pm_email
       );
@@ -5347,7 +5379,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       const effRole = getActiveUserEffectiveRole();
       const loggedInEmp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
 
-      // Collect PM names from both appointed PM users AND job PM assignments
       const pmNamesSet = new Set();
       (state.jobs || []).forEach(j => {
         if (j.pm_name && j.pm_name.trim()) pmNamesSet.add(j.pm_name.trim());
@@ -5357,7 +5388,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       });
       const pmNames = Array.from(pmNamesSet).sort();
 
-      // If logged in as a non-Admin Project Manager, default/scope directly to their projects
       if (effRole !== 'admin' && loggedInEmp) {
         const myName = loggedInEmp.full_name.trim();
         pmSelect.innerHTML = `<option value="${myName.replace(/"/g, '&quot;')}">${myName} (My Assigned Projects)</option>`;
@@ -5413,7 +5443,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       const selectedPm = document.getElementById('pmPortalSelectedPm')?.value || 'ALL';
       const selectedJob = document.getElementById('pmPortalSelectedJob')?.value || 'ALL';
 
-      // Build lookup sets of allowed Job Names AND Job IDs for the selected PM / Job filter
       const pmJobs = (state.jobs || []).filter(j => {
         const nameMatch = selectedJob === 'ALL' || (j.name || '').trim().toLowerCase() === selectedJob.trim().toLowerCase();
         const pmMatch = selectedPm === 'ALL' || (j.pm_name || '').trim().toLowerCase() === selectedPm.trim().toLowerCase();
@@ -5423,7 +5452,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       const allowedJobNames = new Set(pmJobs.map(j => (j.name || '').trim().toLowerCase()).filter(Boolean));
       const allowedJobIds   = new Set(pmJobs.map(j => String(j.id || '').trim().toLowerCase()).filter(Boolean));
 
-      // Also include the explicitly selected job string even if not yet in state.jobs
       if (selectedJob !== 'ALL') {
         allowedJobNames.add(selectedJob.trim().toLowerCase());
       }
@@ -5433,7 +5461,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         const rName = (info.jobName || '').trim().toLowerCase();
         const rId   = (info.jobId || '').trim().toLowerCase();
 
-        // If viewing ALL PMs and ALL Jobs, include any record assigned to a job
         if (selectedPm === 'ALL' && selectedJob === 'ALL') {
           return Boolean(rName || rId || (state.jobs || []).length > 0);
         }
@@ -5442,7 +5469,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         return false;
       };
 
-      // 1. Filter Completed PDF Documents
       const docs = (formSubmissions || []).filter(s => {
         if (recordBelongsToFilter(s)) return true;
         if (s.answers && typeof s.answers === 'object') {
@@ -5453,13 +5479,9 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         return false;
       });
 
-      // 2. Filter Statement Lines / Invoices / Receipts linked to the PM's jobs
       const receipts = (state.statementLines || []).filter(r => recordBelongsToFilter(r));
-
-      // 3. Filter Logged Hours linked to the PM's jobs
       const hoursList = (jobTimeEntries || []).filter(t => recordBelongsToFilter(t));
 
-      // Update Top KPI Cards
       const totalReceiptSpend = receipts.reduce((sum, r) => {
         const val = r.amount !== null && r.amount !== undefined && r.amount !== '' ? Number(r.amount) : Number(r.ocr_amount || 0);
         return sum + (isNaN(val) ? 0 : val);
@@ -5475,7 +5497,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       const body = document.getElementById('pmPortalTabBody');
       if (!body) return;
 
-      // TAB 1: PROJECT DOCUMENTS (COMPLETED PDF FORMS)
       if (activePmPortalTab === 'docs') {
         body.innerHTML = `
           <div class="space-y-3">
@@ -5509,7 +5530,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         return;
       }
 
-      // TAB 2: PROJECT RECEIPTS, INVOICES & CREDIT CARD SPEND
       if (activePmPortalTab === 'receipts') {
         body.innerHTML = `
           <div class="space-y-3">
@@ -5544,7 +5564,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         return;
       }
 
-      // TAB 3: HOURS LOGGED
       if (activePmPortalTab === 'hours') {
         body.innerHTML = `
           <div class="space-y-3">
@@ -5577,7 +5596,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         return;
       }
 
-      // TAB 4: JOB PAYROLL SUMMARY
       if (activePmPortalTab === 'payroll') {
         const byEmp = {};
         hoursList.forEach(t => {
