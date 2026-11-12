@@ -1,0 +1,15 @@
+:root { --safe-bottom: env(safe-area-inset-bottom, 16px); }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: #0f172a;
+      color: #f8fafc;
+      padding-bottom: calc(24px + var(--safe-bottom));
+      -webkit-tap-highlight-color: transparent;
+    }
+    .custom-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: #334155; border-radius: 9999px; }
+    .zoom-Viewport {
+      touch-action: none;
+      user-select: none;
+      -webkit-user-select: none;
+    }
