@@ -112,6 +112,13 @@
             Field Forms (PDF)
           </span>
         </button>
+          <button id="menuFeatPmPortal" onclick="selectMenuFeature('pm_portal')" class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition">
+          <span class="flex items-center gap-2.5">
+            <svg class="w-4 h-4 text-indigo-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"/></svg>
+            PM Project Hub
+          </span>
+          <span id="pmMenuBadge" class="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[10px] font-mono">PM</span>
+        </button>
           <button id="menuFeatTimecards" onclick="selectMenuFeature('timecards')" class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition">
             <span class="flex items-center gap-2.5">
               <svg class="w-4 h-4" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
@@ -370,6 +377,68 @@
           </div>
         </div>
       </div>
+    </section>
+    <!-- PROJECT MANAGER PORTAL (DOCUMENTS, RECEIPTS, HOURS LOGGED & PAYROLL) -->
+    <section id="viewPmPortal" class="hidden space-y-4">
+      <!-- Top Header: Select Project Manager & Job Filter -->
+      <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-3">
+        <div class="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <span class="text-[10px] font-bold uppercase tracking-wider text-indigo-400">Project Manager Workspace</span>
+            <h1 class="text-base font-bold text-white">PM Project Hub — Docs, Receipts, Hours & Payroll</h1>
+          </div>
+          <div class="flex flex-wrap items-center gap-2">
+            <button onclick="openNewJobWithPmModal()" class="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow">
+              + New Job & Assign PM
+            </button>
+            <button onclick="openAssignPmToExistingJobsModal()" class="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-700 text-indigo-300 border border-indigo-500/40 font-bold text-xs">
+              ⚙ Edit Job PMs / Emails
+            </button>
+          </div>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
+          <div>
+            <label class="block text-[11px] font-bold text-slate-400 mb-1">Viewing Project Manager</label>
+            <select id="pmPortalSelectedPm" onchange="handlePmPortalFilterChange()" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white font-semibold"></select>
+          </div>
+          <div>
+            <label class="block text-[11px] font-bold text-slate-400 mb-1">Filter by Assigned Job</label>
+            <select id="pmPortalSelectedJob" onchange="renderPmPortalContent()" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white font-semibold"></select>
+          </div>
+        </div>
+
+        <!-- KPI Summary Strip -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
+          <div class="p-3 rounded-xl bg-slate-900 border border-slate-800">
+            <div class="text-[10px] font-bold uppercase text-slate-400">Project Docs</div>
+            <div id="pmKpiDocs" class="text-lg font-extrabold text-white mt-0.5">0</div>
+          </div>
+          <div class="p-3 rounded-xl bg-slate-900 border border-slate-800">
+            <div class="text-[10px] font-bold uppercase text-slate-400">Card Spend (Receipts)</div>
+            <div id="pmKpiReceipts" class="text-lg font-extrabold text-emerald-400 mt-0.5">$0.00</div>
+          </div>
+          <div class="p-3 rounded-xl bg-slate-900 border border-slate-800">
+            <div class="text-[10px] font-bold uppercase text-slate-400">Hours Logged</div>
+            <div id="pmKpiHours" class="text-lg font-extrabold text-indigo-400 mt-0.5">0.0 hrs</div>
+          </div>
+          <div class="p-3 rounded-xl bg-slate-900 border border-slate-800">
+            <div class="text-[10px] font-bold uppercase text-slate-400">Est. Labor Payroll</div>
+            <div id="pmKpiPayroll" class="text-lg font-extrabold text-amber-400 mt-0.5">$0.00</div>
+          </div>
+        </div>
+
+        <!-- 4 Sub-Tabs -->
+        <div class="flex flex-wrap gap-1.5 pt-1 border-t border-slate-700">
+          <button onclick="switchPmPortalTab('docs')" id="pmTabBtn_docs" class="px-3.5 py-2 rounded-xl text-xs font-bold bg-indigo-600 text-white">📄 Documents (PDFs)</button>
+          <button onclick="switchPmPortalTab('receipts')" id="pmTabBtn_receipts" class="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 text-slate-300">🧾 Job Receipts</button>
+          <button onclick="switchPmPortalTab('hours')" id="pmTabBtn_hours" class="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 text-slate-300">⏱️ Hours Logged</button>
+          <button onclick="switchPmPortalTab('payroll')" id="pmTabBtn_payroll" class="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 text-slate-300">💰 Job Payroll</button>
+        </div>
+      </div>
+
+      <!-- Tab Content Container -->
+      <div id="pmPortalTabBody" class="bg-slate-800 border border-slate-700 rounded-2xl p-4"></div>
     </section>
     <!-- CREW VIEW: SINGLE OR MULTI-RECEIPT CAPTURE & BLIND OCR -->
     <section id="viewCrew" class="max-w-md mx-auto space-y-4">
@@ -4627,6 +4696,658 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       populateLoginUserDropdown();
       renderAll();
     })();
+  </script>
+  <script id="fieldOpsPmModule">
+    // =========================================================================
+    // PROJECT MANAGER ROUTING, JOB PM PROMPTS & PM PROJECT HUB
+    // =========================================================================
+    let jobTimeEntries = [];
+    let activePmPortalTab = 'docs';
+
+    // 1. Load & Sync Job Time Entries + Ensure Job PM Metadata is Preserved
+    async function loadPmPortalData() {
+      try {
+        const cached = localStorage.getItem('fieldops_job_time_entries');
+        if (cached) jobTimeEntries = JSON.parse(cached);
+      } catch (e) {}
+
+      if (supabaseClient && isOnline) {
+        try {
+          const [jobsRes, timeRes] = await Promise.all([
+            supabaseClient.from('jobs').select('*').eq('active', true).order('name'),
+            supabaseClient.from('job_time_entries').select('*').order('work_date', { ascending: false })
+          ]);
+          if (!jobsRes.error && jobsRes.data) {
+            state.jobs = jobsRes.data;
+          }
+          if (!timeRes.error && timeRes.data) {
+            jobTimeEntries = timeRes.data;
+            try { localStorage.setItem('fieldops_job_time_entries', JSON.stringify(jobTimeEntries)); } catch (e) {}
+          }
+        } catch (e) {}
+      }
+    }
+
+    // 2. Extend selectMenuFeature so 'pm_portal' works cleanly alongside 'receipts' and 'forms'
+    const _baseSelectMenuFeature = window.selectMenuFeature;
+    window.selectMenuFeature = function(featureKey) {
+      const pmSection = document.getElementById('viewPmPortal');
+      if (pmSection) pmSection.classList.add('hidden');
+
+      if (featureKey === 'pm_portal') {
+        document.getElementById('topBarPageTitle').textContent = 'PM Project Hub';
+        document.getElementById('viewCrew')?.classList.add('hidden');
+        document.getElementById('viewAdmin')?.classList.add('hidden');
+        document.getElementById('viewOtherModule')?.classList.add('hidden');
+        if (pmSection) pmSection.classList.remove('hidden');
+        closeSideMenu();
+        initPmPortalView();
+        return;
+      }
+      if (_baseSelectMenuFeature) _baseSelectMenuFeature(featureKey);
+    };
+
+    // Also hide PM Portal if Admin switches to an admin sub-page
+    const _baseOpenAdminPage = window.openAdminPage;
+    window.openAdminPage = function(pageKey) {
+      document.getElementById('viewPmPortal')?.classList.add('hidden');
+      if (_baseOpenAdminPage) _baseOpenAdminPage(pageKey);
+      if (pageKey === 'jobs') {
+        setTimeout(checkUnassignedJobsForPmPrompt, 200);
+      }
+    };
+
+    // 3. Intercept New Job Creation so EVERY new job prompts for Project Manager Name & Email
+    window.addEventListener('DOMContentLoaded', () => {
+      setTimeout(() => {
+        loadPmPortalData();
+        hookNewJobInputsForPmPrompt();
+      }, 600);
+    });
+
+    function hookNewJobInputsForPmPrompt() {
+      // Find any "Add Job" button in the Admin Jobs page and upgrade it to prompt for PM + Email
+      document.querySelectorAll('button').forEach(btn => {
+        const oc = btn.getAttribute('onclick') || '';
+        if (oc.includes('addJob') || oc.includes('createJob')) {
+          btn.setAttribute('onclick', 'interceptAddJobWithPmPrompt()');
+        }
+      });
+    }
+
+    function interceptAddJobWithPmPrompt() {
+      const nameInp = document.getElementById('newJobInput') || document.getElementById('jobNameInput');
+      const prefilledJobName = nameInp ? nameInp.value.trim() : '';
+      openNewJobWithPmModal(prefilledJobName);
+    }
+
+    function openNewJobWithPmModal(prefilledJobName = '') {
+      const empOptions = `<option value="">-- Select from Roster (or type below) --</option>` +
+        (state.employees || []).map(e => `<option value="${e.full_name}">${e.full_name}</option>`).join('');
+
+      document.getElementById('modalTitle').textContent = 'Add Job & Assign Project Manager';
+      document.getElementById('modalBody').innerHTML = `
+        <div class="space-y-3.5 text-xs">
+          <div>
+            <label class="block font-bold text-slate-300 mb-1">Job Number & Name <span class="text-emerald-400">*</span></label>
+            <input type="text" id="modalNewJobName" value="${prefilledJobName.replace(/"/g, '&quot;')}" placeholder="e.g. 26-104 Bingham Elementary" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white font-semibold" />
+          </div>
+
+          <div class="p-3 rounded-xl bg-slate-900/90 border border-indigo-500/40 space-y-3">
+            <div class="text-[11px] font-bold uppercase tracking-wider text-indigo-400">Designated Project Manager (Required)</div>
+            <div>
+              <label class="block text-slate-400 mb-1">Quick-Select Employee from Roster</label>
+              <select onchange="if(this.value) document.getElementById('modalNewJobPmName').value = this.value;" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white">
+                ${empOptions}
+              </select>
+            </div>
+            <div>
+              <label class="block font-bold text-slate-300 mb-1">Project Manager Name <span class="text-emerald-400">*</span></label>
+              <input type="text" id="modalNewJobPmName" placeholder="e.g. Jake Textor" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-semibold" />
+            </div>
+            <div>
+              <label class="block font-bold text-slate-300 mb-1">Project Manager Email (Default for PDF Forms) <span class="text-emerald-400">*</span></label>
+              <input type="email" id="modalNewJobPmEmail" placeholder="pm@advconcrete.com" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono" />
+            </div>
+          </div>
+
+          <div class="flex gap-2 pt-2">
+            <button onclick="saveNewJobWithPm()" class="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow">
+              Save Job & Assign PM
+            </button>
+            <button onclick="closeModal()" class="px-4 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold border border-slate-700">
+              Cancel
+            </button>
+          </div>
+        </div>
+      `;
+      document.getElementById('appModal').classList.remove('hidden');
+    }
+
+    async function saveNewJobWithPm() {
+      const name = document.getElementById('modalNewJobName')?.value.trim();
+      const pmName = document.getElementById('modalNewJobPmName')?.value.trim();
+      const pmEmail = document.getElementById('modalNewJobPmEmail')?.value.trim();
+
+      if (!name) return showSimpleToast('Enter a Job Name', true);
+      if (!pmName) return showSimpleToast('Enter a Project Manager Name', true);
+      if (!pmEmail) return showSimpleToast('Enter the Project Manager Email', true);
+
+      const matchedEmp = (state.employees || []).find(e => e.full_name.toLowerCase() === pmName.toLowerCase());
+      const newJob = {
+        id: 'job_' + Date.now(),
+        name,
+        active: true,
+        pm_employee_id: matchedEmp ? matchedEmp.id : null,
+        pm_name: pmName,
+        pm_email: pmEmail
+      };
+
+      state.jobs.push(newJob);
+      state.jobs.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+
+      const oldInp = document.getElementById('newJobInput') || document.getElementById('jobNameInput');
+      if (oldInp) oldInp.value = '';
+
+      if (supabaseClient && isOnline) {
+        try { await supabaseClient.from('jobs').upsert(newJob); } catch (e) {}
+      }
+      await saveState();
+      closeModal();
+      renderAll();
+      if (!document.getElementById('viewPmPortal')?.classList.contains('hidden')) {
+        initPmPortalView();
+      }
+      showSimpleToast(`Job "${name}" Saved (PM: ${pmName})`, false);
+    }
+
+    // Prompt/Modal to assign or edit Project Managers for existing or Sage-synced jobs
+    function checkUnassignedJobsForPmPrompt() {
+      const unassigned = (state.jobs || []).filter(j => j.active !== false && (!j.pm_name || !j.pm_email));
+      if (unassigned.length > 0 && currentRole === 'admin') {
+        openAssignPmToExistingJobsModal(true);
+      }
+    }
+
+    function openAssignPmToExistingJobsModal(onlyUnassignedNotice = false) {
+      const jobs = (state.jobs || []).filter(j => j.active !== false);
+      const empDatalist = `<datalist id="pmRosterList">${(state.employees || []).map(e => `<option value="${e.full_name}">`).join('')}</datalist>`;
+
+      document.getElementById('modalTitle').textContent = 'Assign Project Managers & Default Form Emails';
+      document.getElementById('modalBody').innerHTML = `
+        <div class="space-y-3 text-xs">
+          ${empDatalist}
+          ${onlyUnassignedNotice ? `
+            <div class="p-3 rounded-xl bg-amber-950/80 border border-amber-500/60 text-amber-200">
+              <strong>New / Unassigned Jobs Detected:</strong> Please assign a Project Manager and Email below so completed PDF forms route automatically.
+            </div>
+          ` : `
+            <p class="text-slate-400">Assign a Project Manager and Email to each job. When a crew member selects that job on any PDF form, the recipient email defaults to its Project Manager.</p>
+          `}
+          <div class="space-y-2.5 max-h-96 overflow-y-auto custom-scroll pr-1">
+            ${jobs.map(j => `
+              <div class="p-3 rounded-xl bg-slate-900 border ${(!j.pm_name || !j.pm_email) ? 'border-amber-500/60' : 'border-slate-700'} space-y-2">
+                <div class="font-bold text-white flex items-center justify-between">
+                  <span>${j.name}</span>
+                  ${(!j.pm_name || !j.pm_email) ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300">Needs PM</span>` : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">✓ Assigned</span>`}
+                </div>
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <input type="text" list="pmRosterList" id="editJobPmName_${j.id}" value="${(j.pm_name || '').replace(/"/g, '&quot;')}" placeholder="PM Full Name" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-semibold" />
+                  <input type="email" id="editJobPmEmail_${j.id}" value="${(j.pm_email || '').replace(/"/g, '&quot;')}" placeholder="PM Email Address" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono" />
+                </div>
+              </div>
+            `).join('')}
+          </div>
+          <div class="flex gap-2 pt-2">
+            <button onclick="saveAllJobPmAssignments()" class="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow">
+              Save All PM Assignments
+            </button>
+            <button onclick="closeModal()" class="px-4 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold border border-slate-700">
+              Close
+            </button>
+          </div>
+        </div>
+      `;
+      document.getElementById('appModal').classList.remove('hidden');
+    }
+
+    async function saveAllJobPmAssignments() {
+      const updatedJobs = [];
+      (state.jobs || []).forEach(j => {
+        const nameEl = document.getElementById(`editJobPmName_${j.id}`);
+        const emailEl = document.getElementById(`editJobPmEmail_${j.id}`);
+        if (nameEl && emailEl) {
+          const pmName = nameEl.value.trim();
+          const pmEmail = emailEl.value.trim();
+          const matchedEmp = (state.employees || []).find(e => e.full_name.toLowerCase() === pmName.toLowerCase());
+          j.pm_name = pmName || null;
+          j.pm_email = pmEmail || null;
+          j.pm_employee_id = matchedEmp ? matchedEmp.id : (j.pm_employee_id || null);
+          updatedJobs.push(j);
+        }
+      });
+
+      if (supabaseClient && isOnline && updatedJobs.length) {
+        try { await supabaseClient.from('jobs').upsert(updatedJobs); } catch (e) {}
+      }
+      await saveState();
+      closeModal();
+      if (!document.getElementById('viewPmPortal')?.classList.contains('hidden')) {
+        initPmPortalView();
+      }
+      showSimpleToast('Project Manager Assignments Saved!', false);
+    }
+
+    // =========================================================================
+    // 4. AUTO-FILL PM EMAIL WHEN JOB IS SELECTED ON ANY PDF FORM
+    // =========================================================================
+    window.handleFillerJobSelect = function(selectedJobName) {
+      const emailInp = document.getElementById('fillerRecipientEmail');
+      let badgeEl = document.getElementById('fillerPmAutoRouteBadge');
+      if (!badgeEl && emailInp) {
+        badgeEl = document.createElement('div');
+        badgeEl.id = 'fillerPmAutoRouteBadge';
+        badgeEl.className = 'text-[11px] font-semibold mt-1';
+        emailInp.parentNode.appendChild(badgeEl);
+      }
+
+      const matchedJob = (state.jobs || []).find(
+        j => (j.name || '').trim().toLowerCase() === (selectedJobName || '').trim().toLowerCase()
+      );
+
+      if (matchedJob && matchedJob.pm_email) {
+        if (emailInp) emailInp.value = matchedJob.pm_email;
+        if (badgeEl) {
+          badgeEl.className = 'text-[11px] font-semibold text-emerald-400 mt-1';
+          badgeEl.textContent = `✓ Auto-routed to Project Manager: ${matchedJob.pm_name || 'PM'} (${matchedJob.pm_email})`;
+        }
+        showSimpleToast(`Email set to PM: ${matchedJob.pm_name}`, false);
+      } else if (matchedJob && !matchedJob.pm_email) {
+        if (badgeEl) {
+          badgeEl.className = 'text-[11px] font-semibold text-amber-400 mt-1';
+          badgeEl.innerHTML = `⚠ No PM email assigned to "${matchedJob.name}" yet. <button type="button" onclick="openAssignPmToExistingJobsModal()" class="underline ml-1">Assign PM</button>`;
+        }
+      } else if (badgeEl) {
+        badgeEl.textContent = '';
+      }
+    };
+
+    // Upgrade openFormFiller so any Job dropdown (or field labeled "Job Name" / "Project Name") triggers PM auto-email
+    const _baseOpenFormFiller = window.openFormFiller;
+    window.openFormFiller = function(templateId) {
+      const tpl = formTemplates.find(t => t.id === templateId);
+      if (tpl && Array.isArray(tpl.fields)) {
+        // Automatically upgrade any field labeled "Job Name" or "Project" to a 'job' dropdown so crew can pick the job & trigger PM routing
+        tpl.fields.forEach(f => {
+          if (f.type === 'text' && /\b(job\s*name|project\s*name|job\s*#?)\b/i.test(f.label || '')) {
+            f.type = 'job';
+          }
+        });
+      }
+
+      if (_baseOpenFormFiller) _baseOpenFormFiller(templateId);
+
+      // Attach onchange listener to all job dropdowns inside the form filler
+      if (tpl && Array.isArray(tpl.fields)) {
+        tpl.fields.filter(f => f.type === 'job').forEach(f => {
+          const sel = document.getElementById(`fill_${f.id}`);
+          if (sel) {
+            sel.addEventListener('change', e => handleFillerJobSelect(e.target.value));
+          }
+        });
+      }
+    };
+
+    // =========================================================================
+    // 5. PROJECT MANAGER PORTAL: DOCS, RECEIPTS, HOURS LOGGED & PAYROLL
+    // =========================================================================
+    async function initPmPortalView() {
+      await loadPmPortalData();
+      await loadFormTemplatesFromSupabase();
+
+      const pmSelect = document.getElementById('pmPortalSelectedPm');
+      if (!pmSelect) return;
+
+      // Collect unique PM names from jobs + current logged-in user
+      const pmNamesSet = new Set();
+      (state.jobs || []).forEach(j => {
+        if (j.pm_name && j.pm_name.trim()) pmNamesSet.add(j.pm_name.trim());
+      });
+      const pmNames = Array.from(pmNamesSet).sort();
+
+      const loggedInEmp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
+      const currentUserName = currentRole === 'admin' ? 'ALL' : (loggedInEmp ? loggedInEmp.full_name : 'ALL');
+
+      pmSelect.innerHTML =
+        `<option value="ALL">All Project Managers (${(state.jobs || []).length} Jobs)</option>` +
+        pmNames.map(name => `<option value="${name.replace(/"/g, '&quot;')}">${name}</option>`).join('');
+
+      if (currentUserName !== 'ALL' && pmNames.some(n => n.toLowerCase() === currentUserName.toLowerCase())) {
+        const exact = pmNames.find(n => n.toLowerCase() === currentUserName.toLowerCase());
+        pmSelect.value = exact;
+      } else {
+        pmSelect.value = 'ALL';
+      }
+
+      handlePmPortalFilterChange();
+    }
+
+    function handlePmPortalFilterChange() {
+      const selectedPm = document.getElementById('pmPortalSelectedPm')?.value || 'ALL';
+      const jobSelect = document.getElementById('pmPortalSelectedJob');
+      if (!jobSelect) return;
+
+      const matchingJobs = (state.jobs || []).filter(j => {
+        if (selectedPm === 'ALL') return true;
+        return (j.pm_name || '').trim().toLowerCase() === selectedPm.trim().toLowerCase();
+      });
+
+      jobSelect.innerHTML =
+        `<option value="ALL">All Assigned Jobs (${matchingJobs.length})</option>` +
+        matchingJobs.map(j => `<option value="${j.name.replace(/"/g, '&quot;')}">${j.name} ${j.pm_name ? `(${j.pm_name})` : ''}</option>`).join('');
+
+      renderPmPortalContent();
+    }
+
+    function switchPmPortalTab(tabKey) {
+      activePmPortalTab = tabKey;
+      ['docs', 'receipts', 'hours', 'payroll'].forEach(k => {
+        const btn = document.getElementById(`pmTabBtn_${k}`);
+        if (btn) {
+          btn.className = k === tabKey
+            ? 'px-3.5 py-2 rounded-xl text-xs font-bold bg-indigo-600 text-white shadow'
+            : 'px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 text-slate-300 hover:text-white';
+        }
+      });
+      renderPmPortalContent();
+    }
+
+    function renderPmPortalContent() {
+      const selectedPm = document.getElementById('pmPortalSelectedPm')?.value || 'ALL';
+      const selectedJob = document.getElementById('pmPortalSelectedJob')?.value || 'ALL';
+
+      // Determine the list of job names belonging to this PM / filter
+      const pmJobs = (state.jobs || []).filter(j => {
+        if (selectedJob !== 'ALL') return j.name === selectedJob;
+        if (selectedPm === 'ALL') return true;
+        return (j.pm_name || '').trim().toLowerCase() === selectedPm.trim().toLowerCase();
+      });
+      const allowedJobNames = new Set(pmJobs.map(j => (j.name || '').trim().toLowerCase()));
+
+      const matchesPmJob = jobNameStr => {
+        if (selectedPm === 'ALL' && selectedJob === 'ALL') return true;
+        if (!jobNameStr) return false;
+        return allowedJobNames.has(jobNameStr.trim().toLowerCase());
+      };
+
+      // Filter the 4 datasets for this PM's jobs
+      const docs = (formSubmissions || []).filter(s => {
+        if (matchesPmJob(s.job_name)) return true;
+        // Also check inside answers JSON for any Job Name field
+        if (s.answers && typeof s.answers === 'object') {
+          return Object.values(s.answers).some(v => typeof v === 'string' && matchesPmJob(v));
+        }
+        return false;
+      });
+
+      const receipts = (state.statementLines || []).filter(r => matchesPmJob(r.job_name));
+      const hoursList = (jobTimeEntries || []).filter(t => matchesPmJob(t.job_name));
+
+      // Update Top KPI Cards
+      const totalReceiptSpend = receipts.reduce((sum, r) => sum + (Number(r.amount) || Number(r.ocr_amount) || 0), 0);
+      const totalHours = hoursList.reduce((sum, t) => sum + (Number(t.hours) || 0), 0);
+      const totalPayroll = hoursList.reduce((sum, t) => sum + ((Number(t.hours) || 0) * (Number(t.hourly_rate) || 0)), 0);
+
+      document.getElementById('pmKpiDocs').textContent = docs.length;
+      document.getElementById('pmKpiReceipts').textContent = `$${totalReceiptSpend.toFixed(2)}`;
+      document.getElementById('pmKpiHours').textContent = `${totalHours.toFixed(1)} hrs`;
+      document.getElementById('pmKpiPayroll').textContent = `$${totalPayroll.toFixed(2)}`;
+
+      const body = document.getElementById('pmPortalTabBody');
+      if (!body) return;
+
+      // TAB 1: PROJECT DOCUMENTS (COMPLETED PDF FORMS)
+      if (activePmPortalTab === 'docs') {
+        body.innerHTML = `
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <h2 class="text-xs font-bold uppercase tracking-wider text-indigo-400">Completed Project PDFs (${docs.length})</h2>
+              <button onclick="selectMenuFeature('forms')" class="px-3 py-1.5 rounded-xl bg-emerald-600 text-white font-bold text-xs">+ Fill New PDF Form</button>
+            </div>
+            <div class="space-y-2">
+              ${docs.map(d => `
+                <div class="p-3 rounded-xl bg-slate-900 border border-slate-700 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div>
+                    <div class="font-bold text-white">${d.template_title || 'Completed PDF'}</div>
+                    <div class="text-[11px] text-slate-400">
+                      Job: <span class="text-emerald-300 font-semibold">${d.job_name || 'Assigned'}</span> •
+                      By: ${d.submitted_by || 'Crew'} •
+                      ${d.created_at ? new Date(d.created_at).toLocaleDateString() : ''}
+                      ${d.recipient_email ? ` • Sent to: ${d.recipient_email}` : ''}
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    ${d.filled_pdf_url ? `<a href="${d.filled_pdf_url}" target="_blank" rel="noopener" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs">View Signed PDF</a>` : ''}
+                  </div>
+                </div>
+              `).join('') || `<p class="text-xs text-slate-500 py-4">No completed PDF documents found for the selected PM / Job filter.</p>`}
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      // TAB 2: PROJECT RECEIPTS & CREDIT CARD SPEND
+      if (activePmPortalTab === 'receipts') {
+        body.innerHTML = `
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-400">Project Receipts & Card Charges (${receipts.length})</h2>
+              <span class="text-xs font-mono font-bold text-emerald-300">Total: $${totalReceiptSpend.toFixed(2)}</span>
+            </div>
+            <div class="space-y-2">
+              ${receipts.map(r => {
+                const amt = Number(r.amount) || Number(r.ocr_amount) || 0;
+                return `
+                  <div class="p-3 rounded-xl bg-slate-900 border border-slate-700 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div>
+                      <div class="font-bold text-white">${r.merchant || r.ocr_merchant || 'Vendor Receipt'} — <span class="text-emerald-400 font-mono">$${amt.toFixed(2)}</span></div>
+                      <div class="text-[11px] text-slate-400">
+                        Job: <span class="text-indigo-300 font-semibold">${r.job_name || '--'}</span> •
+                        Cost Code: <span class="text-amber-300 font-mono">${r.cost_code || 'Unassigned'}</span> •
+                        Card *${r.card_last4 || '----'} • ${r.post_date || ''}
+                      </div>
+                    </div>
+                    ${r.receipt_image ? `<button onclick="openFullImagePreview('${r.id}')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/40 font-bold text-xs">View Receipt Photo</button>` : `<span class="text-[11px] text-amber-400">Missing Photo</span>`}
+                  </div>
+                `;
+              }).join('') || `<p class="text-xs text-slate-500 py-4">No receipts coded to the selected PM / Job filter yet.</p>`}
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      // TAB 3: HOURS LOGGED
+      if (activePmPortalTab === 'hours') {
+        body.innerHTML = `
+          <div class="space-y-3">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <h2 class="text-xs font-bold uppercase tracking-wider text-indigo-400">Crew Hours Logged (${totalHours.toFixed(1)} hrs)</h2>
+              <button onclick="openLogJobHoursModal()" class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs">+ Log Crew Hours</button>
+            </div>
+            <div class="space-y-2">
+              ${hoursList.map(t => `
+                <div class="p-3 rounded-xl bg-slate-900 border border-slate-700 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div>
+                    <div class="font-bold text-white">${t.employee_name} — <span class="text-indigo-400 font-mono">${Number(t.hours).toFixed(2)} hrs</span></div>
+                    <div class="text-[11px] text-slate-400">
+                      Job: <span class="text-emerald-300 font-semibold">${t.job_name}</span> •
+                      Cost Code: <span class="font-mono text-amber-300">${t.cost_code || 'General'}</span> •
+                      Date: ${t.work_date || ''} ${t.notes ? `• "${t.notes}"` : ''}
+                    </div>
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <button onclick="toggleApproveTimeEntry('${t.id}')" class="px-2.5 py-1 rounded-lg font-bold text-[11px] ${t.approved_by_pm ? 'bg-emerald-600/30 text-emerald-200 border border-emerald-500/40' : 'bg-slate-800 text-slate-300 border border-slate-700'}">
+                      ${t.approved_by_pm ? '✓ PM Approved' : 'Approve'}
+                    </button>
+                    <button onclick="deleteTimeEntry('${t.id}')" class="px-2 py-1 rounded-lg bg-red-950/60 text-red-300 font-bold text-[11px]">✕</button>
+                  </div>
+                </div>
+              `).join('') || `<p class="text-xs text-slate-500 py-4">No hours logged for this project filter yet. Click "+ Log Crew Hours" to record job hours.</p>`}
+            </div>
+          </div>
+        `;
+        return;
+      }
+
+      // TAB 4: JOB PAYROLL SUMMARY
+      if (activePmPortalTab === 'payroll') {
+        // Group hours & labor cost by Employee
+        const byEmp = {};
+        hoursList.forEach(t => {
+          const key = t.employee_name || 'Crew';
+          if (!byEmp[key]) byEmp[key] = { hours: 0, cost: 0, approvedHours: 0 };
+          const h = Number(t.hours) || 0;
+          const r = Number(t.hourly_rate) || 0;
+          byEmp[key].hours += h;
+          byEmp[key].cost += h * r;
+          if (t.approved_by_pm) byEmp[key].approvedHours += h;
+        });
+
+        const rows = Object.entries(byEmp);
+        body.innerHTML = `
+          <div class="space-y-3">
+            <div class="flex items-center justify-between">
+              <h2 class="text-xs font-bold uppercase tracking-wider text-amber-400">Project Payroll & Labor Cost Breakdown</h2>
+              <span class="text-xs font-mono font-bold text-amber-300">Total Labor: $${totalPayroll.toFixed(2)}</span>
+            </div>
+            <div class="space-y-2">
+              ${rows.map(([empName, stats]) => `
+                <div class="p-3 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-between text-xs">
+                  <div>
+                    <div class="font-bold text-white">${empName}</div>
+                    <div class="text-[11px] text-slate-400">
+                      Total: <span class="text-white font-mono">${stats.hours.toFixed(2)} hrs</span> •
+                      PM Approved: <span class="text-emerald-400 font-mono">${stats.approvedHours.toFixed(2)} hrs</span>
+                    </div>
+                  </div>
+                  <div class="text-right font-mono font-bold text-amber-400 text-sm">
+                    $${stats.cost.toFixed(2)}
+                  </div>
+                </div>
+              `).join('') || `<p class="text-xs text-slate-500 py-4">No payroll entries recorded for the selected project filter yet.</p>`}
+            </div>
+          </div>
+        `;
+      }
+    }
+
+    function openLogJobHoursModal() {
+      const selectedJob = document.getElementById('pmPortalSelectedJob')?.value;
+      const jobOpts = (state.jobs || []).map(j => `<option value="${j.name.replace(/"/g, '&quot;')}" ${j.name === selectedJob ? 'selected' : ''}>${j.name}</option>`).join('');
+      const empOpts = (state.employees || []).map(e => `<option value="${e.full_name.replace(/"/g, '&quot;')}">${e.full_name}</option>`).join('');
+      const ccOpts = `<option value="">-- Cost Code --</option>` + (state.costCodes || []).map(c => `<option value="${c.name.replace(/"/g, '&quot;')}">${c.name}</option>`).join('');
+      const today = new Date().toISOString().slice(0, 10);
+
+      document.getElementById('modalTitle').textContent = 'Log Project Hours';
+      document.getElementById('modalBody').innerHTML = `
+        <div class="space-y-3 text-xs">
+          <div>
+            <label class="block font-bold text-slate-300 mb-1">Job Name</label>
+            <select id="logHrJob" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white">${jobOpts}</select>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <div>
+              <label class="block font-bold text-slate-300 mb-1">Employee</label>
+              <select id="logHrEmp" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white">${empOpts}</select>
+            </div>
+            <div>
+              <label class="block font-bold text-slate-300 mb-1">Work Date</label>
+              <input type="date" id="logHrDate" value="${today}" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white" />
+            </div>
+          </div>
+          <div class="grid grid-cols-3 gap-2">
+            <div>
+              <label class="block font-bold text-slate-300 mb-1">Hours</label>
+              <input type="number" step="0.25" id="logHrHours" placeholder="8.0" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono" />
+            </div>
+            <div>
+              <label class="block font-bold text-slate-300 mb-1">Hourly Rate ($)</label>
+              <input type="number" step="0.50" id="logHrRate" value="35.00" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono" />
+            </div>
+            <div>
+              <label class="block font-bold text-slate-300 mb-1">Cost Code</label>
+              <select id="logHrCc" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-2 py-2 text-white">${ccOpts}</select>
+            </div>
+          </div>
+          <div>
+            <label class="block font-bold text-slate-300 mb-1">Work Notes (Optional)</label>
+            <input type="text" id="logHrNotes" placeholder="e.g. Footing pour & finish" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white" />
+          </div>
+          <div class="flex gap-2 pt-2">
+            <button onclick="saveLoggedJobHours()" class="flex-1 py-2.5 rounded-xl bg-emerald-600 text-white font-bold">Save Hours</button>
+            <button onclick="closeModal()" class="px-4 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold">Cancel</button>
+          </div>
+        </div>
+      `;
+      document.getElementById('appModal').classList.remove('hidden');
+    }
+
+    async function saveLoggedJobHours() {
+      const job_name = document.getElementById('logHrJob')?.value || '';
+      const employee_name = document.getElementById('logHrEmp')?.value || '';
+      const work_date = document.getElementById('logHrDate')?.value || new Date().toISOString().slice(0, 10);
+      const hours = Number(document.getElementById('logHrHours')?.value || 0);
+      const hourly_rate = Number(document.getElementById('logHrRate')?.value || 0);
+      const cost_code = document.getElementById('logHrCc')?.value || '';
+      const notes = document.getElementById('logHrNotes')?.value.trim() || '';
+
+      if (!job_name || hours <= 0) return showSimpleToast('Select a Job and enter valid Hours', true);
+
+      const entry = {
+        id: 'hr_' + Date.now(),
+        job_name,
+        employee_name,
+        cost_code,
+        work_date,
+        hours,
+        hourly_rate,
+        notes,
+        approved_by_pm: true,
+        created_at: new Date().toISOString()
+      };
+
+      jobTimeEntries.unshift(entry);
+      try { localStorage.setItem('fieldops_job_time_entries', JSON.stringify(jobTimeEntries)); } catch (e) {}
+      if (supabaseClient && isOnline) {
+        try { await supabaseClient.from('job_time_entries').insert(entry); } catch (e) {}
+      }
+      closeModal();
+      renderPmPortalContent();
+      showSimpleToast('Hours Logged to Project!', false);
+    }
+
+    async function toggleApproveTimeEntry(id) {
+      const item = jobTimeEntries.find(t => t.id === id);
+      if (!item) return;
+      item.approved_by_pm = !item.approved_by_pm;
+      try { localStorage.setItem('fieldops_job_time_entries', JSON.stringify(jobTimeEntries)); } catch (e) {}
+      if (supabaseClient && isOnline) {
+        try { await supabaseClient.from('job_time_entries').update({ approved_by_pm: item.approved_by_pm }).eq('id', id); } catch (e) {}
+      }
+      renderPmPortalContent();
+    }
+
+    async function deleteTimeEntry(id) {
+      jobTimeEntries = jobTimeEntries.filter(t => t.id !== id);
+      try { localStorage.setItem('fieldops_job_time_entries', JSON.stringify(jobTimeEntries)); } catch (e) {}
+      if (supabaseClient && isOnline) {
+        try { await supabaseClient.from('job_time_entries').delete().eq('id', id); } catch (e) {}
+      }
+      renderPmPortalContent();
+      showSimpleToast('Time Entry Removed', true);
+    }
   </script>
 </body>
 </html>
