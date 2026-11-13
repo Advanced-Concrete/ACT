@@ -924,7 +924,7 @@
     // =========================================================================
     // 7. PROJECT MANAGER PORTAL: DOCS, RECEIPTS/INVOICES, HOURS & PAYROLL
     // =========================================================================
-    async function initPmPortalView() {
+    window.initPmPortalView = async function initPmPortalView() {
       await loadPmPortalData();
       await loadFormTemplatesFromSupabase();
       injectRoleButtonIntoPmHeader();
