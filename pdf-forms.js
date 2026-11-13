@@ -52,15 +52,27 @@
         showFormsSubView('list');
         loadFormTemplatesFromSupabase();
       } else if (featureKey === 'pm_portal' || featureKey === 'timecards' || featureKey === 'payroll') {
-        document.getElementById('topBarPageTitle').textContent = 'PM Project Hub';
+        const titlesMap = {
+          pm_portal: { top: 'PM Project Hub', eye: 'Project Manager Workspace', h1: 'PM Project Hub — Docs, Receipts, Hours & Payroll', tab: 'docs' },
+          timecards: { top: 'Time Cards',     eye: 'Crew Timekeeping & Hours',  h1: 'Time Cards — Crew Hours Logged',                    tab: 'hours' },
+          payroll:   { top: 'Payroll',        eye: 'Labor Cost & Payroll',      h1: 'Payroll — Project Labor Breakdown',                 tab: 'payroll' }
+        };
+        const cfg = titlesMap[featureKey] || titlesMap.pm_portal;
+        document.getElementById('topBarPageTitle').textContent = cfg.top;
+        const eyeEl = document.getElementById('pmHubEyebrow');
+        const h1El = document.getElementById('pmHubMainHeading');
+        if (eyeEl) eyeEl.textContent = cfg.eye;
+        if (h1El) h1El.textContent = cfg.h1;
+
         crewView.classList.add('hidden');
         adminView.classList.add('hidden');
         otherView.classList.add('hidden');
         if (placeholderCard) placeholderCard.classList.add('hidden');
         if (pmView) pmView.classList.remove('hidden');
+        if (typeof window.switchPmPortalTab === 'function') {
+          window.switchPmPortalTab(cfg.tab);
+        }
         if (typeof window.initPmPortalView === 'function') {
-          if (featureKey === 'timecards') window.activePmPortalTab = 'hours';
-          else if (featureKey === 'payroll') window.activePmPortalTab = 'payroll';
           window.initPmPortalView();
         }
       }
