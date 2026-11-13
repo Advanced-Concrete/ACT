@@ -473,21 +473,33 @@
         j => (j.pm_name || '').trim().toLowerCase() === (emp.full_name || '').trim().toLowerCase()
       );
 
-      // Route 'pm_portal', 'timecards', and 'payroll' directly into the PM Project Hub tabs!
+      // Route 'pm_portal', 'timecards', and 'payroll' directly into their dedicated PM Project Hub views & tabs!
       if (featureKey === 'pm_portal' || featureKey === 'timecards' || featureKey === 'payroll') {
         if (effRole !== 'admin' && effRole !== 'pm' && effRole !== 'supervisor' && !isAssignedPm) {
           closeSideMenu();
           return showSimpleToast('PM Project Hub requires PM, Supervisor, or Admin level', true);
         }
-        if (featureKey === 'timecards') activePmPortalTab = 'hours';
-        else if (featureKey === 'payroll') activePmPortalTab = 'payroll';
+        const hubLabel = effRole === 'supervisor' ? 'Supervisor Job Hub' : 'PM Project Hub';
+        const viewMeta = {
+          pm_portal: { top: hubLabel,     eye: 'Project Manager Workspace', h1: `${hubLabel} — Docs, Receipts, Hours & Payroll`, tab: 'docs' },
+          timecards: { top: 'Time Cards', eye: 'Crew Timekeeping & Hours',  h1: 'Time Cards — Crew Hours Logged',                    tab: 'hours' },
+          payroll:   { top: 'Payroll',    eye: 'Labor Cost & Payroll',      h1: 'Payroll — Project Labor Breakdown',                 tab: 'payroll' }
+        };
+        const cfg = viewMeta[featureKey] || viewMeta.pm_portal;
+        activePmPortalTab = cfg.tab;
 
-        document.getElementById('topBarPageTitle').textContent = effRole === 'supervisor' ? 'Supervisor Job Hub' : 'PM Project Hub';
+        document.getElementById('topBarPageTitle').textContent = cfg.top;
+        const eyeEl = document.getElementById('pmHubEyebrow');
+        const h1El = document.getElementById('pmHubMainHeading');
+        if (eyeEl) eyeEl.textContent = cfg.eye;
+        if (h1El) h1El.textContent = cfg.h1;
+
         document.getElementById('viewCrew')?.classList.add('hidden');
         document.getElementById('viewAdmin')?.classList.add('hidden');
         document.getElementById('viewOtherModule')?.classList.add('hidden');
         if (pmSection) pmSection.classList.remove('hidden');
         closeSideMenu();
+        switchPmPortalTab(cfg.tab);
         initPmPortalView();
         return;
       }
@@ -554,7 +566,8 @@
     // =========================================================================
     // 4. ADMIN USER LEVELS & ROLES MANAGER MODAL (ADMIN / PM / SUPERVISOR / CREW)
     // =========================================================================
-    window.openUserRolesManagerModal = function() {
+    window.openUserRolesManagerModal = function openUserRolesManagerModal() {
+      if (typeof closeSideMenu === 'function') closeSideMenu();
       if (getActiveUserEffectiveRole() !== 'admin') {
         return showSimpleToast('Only Administrators can change user levels', true);
       }
@@ -686,7 +699,7 @@
       }
     };
 
-    function openNewJobWithPmModal(prefilledJobName = '') {
+    window.openNewJobWithPmModal = function openNewJobWithPmModal(prefilledJobName = '') {
       const pmCandidates = getAppointedPmList();
       const otherEmps = (state.employees || []).filter(e => !pmCandidates.includes(e));
 
@@ -789,7 +802,7 @@
       }
     }
 
-    function openAssignPmToExistingJobsModal(onlyUnassignedNotice = false) {
+    window.openAssignPmToExistingJobsModal = function openAssignPmToExistingJobsModal(onlyUnassignedNotice = false) {
       const jobs = (state.jobs || []).filter(j => j.active !== false);
       const pmCandidates = getAppointedPmList();
       const empDatalist = `<datalist id="pmRosterList">${pmCandidates.map(e => `<option value="${e.full_name}">`).join('')}</datalist>`;
@@ -985,7 +998,7 @@
       switchPmPortalTab(activePmPortalTab || 'docs');
     }
 
-    function switchPmPortalTab(tabKey) {
+    window.switchPmPortalTab = function switchPmPortalTab(tabKey) {
       activePmPortalTab = tabKey;
       ['docs', 'receipts', 'hours', 'payroll'].forEach(k => {
         const btn = document.getElementById(`pmTabBtn_${k}`);
