@@ -26,8 +26,11 @@
       const otherView = document.getElementById('viewOtherModule');
       const crewView = document.getElementById('viewCrew');
       const adminView = document.getElementById('viewAdmin');
+      const pmView = document.getElementById('viewPmPortal');
       const placeholderCard = document.getElementById('otherModulePlaceholderCard');
       const formsWorkspace = document.getElementById('fieldFormsWorkspace');
+
+      if (pmView) pmView.classList.add('hidden');
 
       if (featureKey === 'receipts') {
         otherView.classList.add('hidden');
@@ -48,15 +51,18 @@
         if (adminTabBtn) adminTabBtn.classList.toggle('hidden', currentRole !== 'admin');
         showFormsSubView('list');
         loadFormTemplatesFromSupabase();
-      } else {
-        const titles = { timecards: 'Time Cards', payroll: 'Payroll' };
-        document.getElementById('otherModuleTitle').textContent = titles[featureKey] || 'Module';
-        document.getElementById('topBarPageTitle').textContent = titles[featureKey] || 'Module';
+      } else if (featureKey === 'pm_portal' || featureKey === 'timecards' || featureKey === 'payroll') {
+        document.getElementById('topBarPageTitle').textContent = 'PM Project Hub';
         crewView.classList.add('hidden');
         adminView.classList.add('hidden');
-        otherView.classList.remove('hidden');
-        if (formsWorkspace) formsWorkspace.classList.add('hidden');
-        if (placeholderCard) placeholderCard.classList.remove('hidden');
+        otherView.classList.add('hidden');
+        if (placeholderCard) placeholderCard.classList.add('hidden');
+        if (pmView) pmView.classList.remove('hidden');
+        if (typeof window.initPmPortalView === 'function') {
+          if (featureKey === 'timecards') window.activePmPortalTab = 'hours';
+          else if (featureKey === 'payroll') window.activePmPortalTab = 'payroll';
+          window.initPmPortalView();
+        }
       }
       closeSideMenu();
       renderAll();
