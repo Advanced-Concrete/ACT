@@ -365,13 +365,46 @@
       { name: "Bill Textor", last4: "6229", pin: "1234" }
     ];
 
+    const DEFAULT_APPOINTED_ROLES = {
+      'jake textor':   { role: 'admin',      email: 'jake@advconcrete.com' },
+      'eddie varner':  { role: 'pm',         email: '' },
+      'gary salyers':  { role: 'supervisor', email: '' },
+      'grant gilbert': { role: 'supervisor', email: '' }
+    };
+
+    function resolveCoreEmployeeRole(emp) {
+      if (!emp) return 'crew';
+      const lowerName = (emp.full_name || '').trim().toLowerCase();
+      // Check localStorage roles_pm_meta if explicitly saved by Admin
+      try {
+        const raw = localStorage.getItem('fieldops_roles_pm_meta');
+        if (raw) {
+          const meta = JSON.parse(raw);
+          const saved = meta?.empRoles?.[emp.id] || meta?.empRoles?.[emp.full_name];
+          if (saved && saved.role) {
+            if (saved.role !== 'crew' || saved.explicitly_saved) {
+              return saved.role;
+            }
+          }
+        }
+      } catch (e) {}
+
+      const r = (emp.role || '').toLowerCase().trim();
+      if (r === 'admin' || r === 'pm' || r === 'supervisor') return r;
+      if (DEFAULT_APPOINTED_ROLES[lowerName]) return DEFAULT_APPOINTED_ROLES[lowerName].role;
+      return 'crew';
+    }
+
     function getDefaultRosterState() {
       const employees = [];
       const cards = [];
       PRELOADED_CREW_ROSTER.forEach((item, index) => {
         const empId = `emp-preset-${index + 1}`;
         const cardId = `card-preset-${index + 1}`;
-        employees.push({ id: empId, sage_emp_id: null, full_name: item.name, pin: item.pin, active: true });
+        const lowerName = item.name.trim().toLowerCase();
+        const presetRole = DEFAULT_APPOINTED_ROLES[lowerName]?.role || 'crew';
+        const presetEmail = DEFAULT_APPOINTED_ROLES[lowerName]?.email || null;
+        employees.push({ id: empId, sage_emp_id: null, full_name: item.name, pin: item.pin, role: presetRole, email: presetEmail, active: true });
         cards.push({ id: cardId, last_four: item.last4, assigned_employee_id: empId });
       });
       return { jobs: [], costCodes: [], employees, cards, statementLines: [], offlineQueue: [], ocrApiKey: '' };
@@ -387,6 +420,11 @@
         loadedState.employees.forEach(e => {
           if (!e.pin) e.pin = '1234';
           if (typeof e.active !== 'boolean') e.active = true;
+          e.role = resolveCoreEmployeeRole(e);
+          const lowerName = (e.full_name || '').trim().toLowerCase();
+          if (!e.email && DEFAULT_APPOINTED_ROLES[lowerName]?.email) {
+            e.email = DEFAULT_APPOINTED_ROLES[lowerName].email;
+          }
         });
       }
       if (!Array.isArray(loadedState.jobs)) loadedState.jobs = [];
@@ -581,6 +619,8 @@
               sage_emp_id: e.sage_emp_id || null,
               full_name: e.full_name,
               pin: e.pin || '1234',
+              role: resolveCoreEmployeeRole(e),
+              email: e.email || null,
               active: e.active !== false
             }))
           ) : Promise.resolve(),
@@ -598,6 +638,9 @@
               id: j.id,
               sage_job_number: j.sage_job_number || null,
               name: j.name,
+              pm_employee_id: j.pm_employee_id || null,
+              pm_name: j.pm_name || null,
+              pm_email: j.pm_email || null,
               active: true
             }))
           ) : Promise.resolve(),
@@ -809,20 +852,64 @@
 
       if (selectedUser === 'ADMIN') {
         currentRole = 'admin';
+        activeCrewEmployeeId = null;
         document.getElementById('topBarUserName').textContent = 'Administrator';
         document.getElementById('drawerUserName').textContent = 'Administrator';
-        document.getElementById('drawerUserRole').textContent = 'Admin Portal';
+        const roleEl = document.getElementById('drawerUserRole');
+        if (roleEl) {
+          roleEl.textContent = 'Admin Portal';
+          roleEl.className = 'text-[11px] font-semibold text-emerald-400';
+        }
         updateTopBarIndicators();
         openAdminPage('reconcile');
       } else {
-        currentRole = 'crew';
         activeCrewEmployeeId = selectedUser;
-        document.getElementById('topBarUserName').textContent = empRecord ? empRecord.full_name : 'Crew Member';
-        document.getElementById('drawerUserName').textContent = empRecord ? empRecord.full_name : 'Crew Member';
-        document.getElementById('drawerUserRole').textContent = 'Crew Member';
-        document.getElementById('topBarPageTitle').textContent = 'Receipts';
-        updateTopBarIndicators();
-        selectMenuFeature('receipts');
+        const effRole = resolveCoreEmployeeRole(empRecord);
+        const roleEl = document.getElementById('drawerUserRole');
+
+        if (effRole === 'admin') {
+          currentRole = 'admin';
+          document.getElementById('topBarUserName').textContent = `Admin: ${empRecord.full_name}`;
+          document.getElementById('drawerUserName').textContent = empRecord.full_name;
+          if (roleEl) {
+            roleEl.textContent = 'Administrator';
+            roleEl.className = 'text-[11px] font-semibold text-emerald-400';
+          }
+          updateTopBarIndicators();
+          openAdminPage('reconcile');
+        } else if (effRole === 'pm') {
+          currentRole = 'pm';
+          document.getElementById('topBarUserName').textContent = `PM: ${empRecord.full_name}`;
+          document.getElementById('drawerUserName').textContent = empRecord.full_name;
+          if (roleEl) {
+            roleEl.textContent = 'Project Manager';
+            roleEl.className = 'text-[11px] font-semibold text-indigo-400';
+          }
+          updateTopBarIndicators();
+          selectMenuFeature('pm_portal');
+        } else if (effRole === 'supervisor') {
+          currentRole = 'supervisor';
+          document.getElementById('topBarUserName').textContent = `Supervisor: ${empRecord.full_name}`;
+          document.getElementById('drawerUserName').textContent = empRecord.full_name;
+          if (roleEl) {
+            roleEl.textContent = 'Supervisor';
+            roleEl.className = 'text-[11px] font-semibold text-amber-400';
+          }
+          document.getElementById('topBarPageTitle').textContent = 'Receipts';
+          updateTopBarIndicators();
+          selectMenuFeature('receipts');
+        } else {
+          currentRole = 'crew';
+          document.getElementById('topBarUserName').textContent = empRecord ? empRecord.full_name : 'Crew Member';
+          document.getElementById('drawerUserName').textContent = empRecord ? empRecord.full_name : 'Crew Member';
+          if (roleEl) {
+            roleEl.textContent = 'Crew Member';
+            roleEl.className = 'text-[11px] font-semibold text-slate-400';
+          }
+          document.getElementById('topBarPageTitle').textContent = 'Receipts';
+          updateTopBarIndicators();
+          selectMenuFeature('receipts');
+        }
       }
     }
 
@@ -2574,11 +2661,53 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         topDot.className = isOnline ? 'w-2 h-2 rounded-full bg-emerald-400' : 'w-2 h-2 rounded-full bg-amber-400';
       }
 
-      const isAdmin = currentRole === 'admin';
-      ['drawerAdminFutureFeatures', 'drawerAdminSection', 'drawerOptionsSection', 'drawerResetDataBtn'].forEach(id => {
+      const emp = activeCrewEmployeeId ? state.employees.find(e => e.id === activeCrewEmployeeId) : null;
+      const effRole = (currentRole === 'admin') ? 'admin' : (emp ? resolveCoreEmployeeRole(emp) : (currentRole || 'crew'));
+      if (effRole === 'admin' && currentRole !== 'admin') currentRole = 'admin';
+
+      const isAdmin = (effRole === 'admin');
+      const isPm = (effRole === 'pm');
+      const isSupv = (effRole === 'supervisor');
+      const isAssignedPmOnAnyJob = emp && (state.jobs || []).some(
+        j => (j.pm_name || '').trim().toLowerCase() === (emp.full_name || '').trim().toLowerCase()
+      );
+      const canSeePmAndForms = (isAdmin || isPm || isSupv || isAssignedPmOnAnyJob);
+
+      // Admin-only sections
+      ['drawerAdminSection', 'drawerOptionsSection', 'drawerResetDataBtn', 'menuFeatUserRoles'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.classList.toggle('hidden', !isAdmin);
       });
+
+      // My Personal Card shortcut for appointed Admins who hold a personal company card
+      const myCardBtn = document.getElementById('menuFeatMyPersonalCard');
+      if (myCardBtn) {
+        if (isAdmin && emp) {
+          const card = state.cards.find(c => c.assigned_employee_id === emp.id);
+          const lbl = document.getElementById('menuMyCardLabel');
+          if (lbl) lbl.textContent = `My Personal Card${card ? ' (•••• ' + card.last_four + ')' : ''}`;
+          myCardBtn.classList.remove('hidden');
+        } else {
+          myCardBtn.classList.add('hidden');
+        }
+      }
+
+      // Hide Field Forms, PM Hub, Time Cards, and Payroll from standard Crew Members
+      const allowCrewForms = localStorage.getItem('fieldops_allow_crew_forms') === 'true';
+      const formsBtn = document.getElementById('menuFeatForms');
+      if (formsBtn) formsBtn.classList.toggle('hidden', !(canSeePmAndForms || allowCrewForms));
+
+      const pmBtn = document.getElementById('menuFeatPmPortal');
+      if (pmBtn) pmBtn.classList.toggle('hidden', !canSeePmAndForms);
+
+      const futureWrap = document.getElementById('drawerAdminFutureFeatures');
+      if (futureWrap) futureWrap.classList.toggle('hidden', !canSeePmAndForms);
+
+      const tcBtn = document.getElementById('menuFeatTimecards');
+      if (tcBtn) tcBtn.classList.toggle('hidden', !canSeePmAndForms);
+
+      const prBtn = document.getElementById('menuFeatPayroll');
+      if (prBtn) prBtn.classList.toggle('hidden', !(isAdmin || isPm || isAssignedPmOnAnyJob));
     }
 
     function setAdminFilter(f) {
