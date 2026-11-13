@@ -19,7 +19,7 @@
     let justFinishedPinDrag = false;
 
     function selectMenuFeature(featureKey) {
-      if (currentRole !== 'admin' && featureKey !== 'receipts' && featureKey !== 'forms') {
+      if (currentRole !== 'admin' && currentRole !== 'pm' && currentRole !== 'supervisor' && featureKey !== 'receipts' && featureKey !== 'forms') {
         closeSideMenu();
         return;
       }
