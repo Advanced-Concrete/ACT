@@ -13,20 +13,51 @@
       crew:       { label: 'Crew Member',     short: 'Crew',       badgeClass: 'bg-slate-700/60 text-slate-300 border-slate-600',        textClass: 'text-slate-400' }
     };
 
+    const APPOINTED_ROLE_DEFAULTS = {
+      'jake textor':   { role: 'admin',      email: 'jake@advconcrete.com' },
+      'eddie varner':  { role: 'pm',         email: '' },
+      'gary salyers':  { role: 'supervisor', email: '' },
+      'grant gilbert': { role: 'supervisor', email: '' }
+    };
+
     function applyStoredRolesSync() {
       try {
         const raw = localStorage.getItem('fieldops_roles_pm_meta');
-        if (!raw) return;
-        const meta = JSON.parse(raw);
+        let meta = raw ? JSON.parse(raw) : { empRoles: {}, jobPms: {} };
+
+        // Auto-heal stale 'crew' entries from the SQL DEFAULT 'crew' column migration
+        if (!meta.v3_fixed) {
+          meta.empRoles = meta.empRoles || {};
+          Object.entries(APPOINTED_ROLE_DEFAULTS).forEach(([lowerName, cfg]) => {
+            (state?.employees || []).forEach(e => {
+              if ((e.full_name || '').trim().toLowerCase() === lowerName) {
+                meta.empRoles[e.id] = { role: cfg.role, email: e.email || cfg.email || '', explicitly_saved: true };
+                meta.empRoles[e.full_name] = { role: cfg.role, email: e.email || cfg.email || '', explicitly_saved: true };
+                e.role = cfg.role;
+                if (cfg.email && !e.email) e.email = cfg.email;
+              }
+            });
+          });
+          meta.v3_fixed = true;
+          try { localStorage.setItem('fieldops_roles_pm_meta', JSON.stringify(meta)); } catch (e) {}
+        }
+
         if (meta.empRoles && Array.isArray(state?.employees)) {
           state.employees.forEach(e => {
+            const lowerName = (e.full_name || '').trim().toLowerCase();
             const saved = meta.empRoles[e.id] || meta.empRoles[e.full_name];
-            if (saved) {
-              if (saved.role) e.role = saved.role;
+            if (saved && saved.role && (saved.role !== 'crew' || saved.explicitly_saved)) {
+              e.role = saved.role;
               if (saved.email) e.email = saved.email;
+            } else if (APPOINTED_ROLE_DEFAULTS[lowerName]) {
+              e.role = APPOINTED_ROLE_DEFAULTS[lowerName].role;
+              if (APPOINTED_ROLE_DEFAULTS[lowerName].email && !e.email) {
+                e.email = APPOINTED_ROLE_DEFAULTS[lowerName].email;
+              }
             }
           });
         }
+
         if (meta.jobPms && Array.isArray(state?.jobs)) {
           state.jobs.forEach(j => {
             const saved = meta.jobPms[j.id] || meta.jobPms[j.name];
@@ -43,9 +74,10 @@
     function getEmployeeRole(emp) {
       applyStoredRolesSync();
       if (!emp) return 'crew';
+      const lowerName = (emp.full_name || '').trim().toLowerCase();
       const r = (emp.role || '').toLowerCase().trim();
-      if (['admin', 'pm', 'supervisor', 'crew'].includes(r)) return r;
-      if ((emp.full_name || '').toLowerCase().includes('jake textor')) return 'admin';
+      if (r === 'admin' || r === 'pm' || r === 'supervisor') return r;
+      if (APPOINTED_ROLE_DEFAULTS[lowerName]) return APPOINTED_ROLE_DEFAULTS[lowerName].role;
       return 'crew';
     }
 
@@ -55,7 +87,9 @@
         const emp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
         if (emp) return getEmployeeRole(emp);
       }
-      if (typeof currentRole !== 'undefined' && currentRole === 'admin') return 'admin';
+      if (typeof currentRole !== 'undefined' && (currentRole === 'admin' || currentRole === 'pm' || currentRole === 'supervisor')) {
+        return currentRole;
+      }
       return 'crew';
     }
 
@@ -133,8 +167,8 @@
       const empRoles = {};
       (state.employees || []).forEach(e => {
         const r = (e.role || '').toLowerCase().trim() || getEmployeeRole(e);
-        empRoles[e.id] = { role: r, email: e.email || '' };
-        empRoles[e.full_name] = { role: r, email: e.email || '' };
+        empRoles[e.id] = { role: r, email: e.email || '', explicitly_saved: true };
+        empRoles[e.full_name] = { role: r, email: e.email || '', explicitly_saved: true };
       });
       const jobPms = {};
       (state.jobs || []).forEach(j => {
@@ -144,7 +178,7 @@
         }
       });
 
-      const payloadObj = { empRoles, jobPms };
+      const payloadObj = { v3_fixed: true, empRoles, jobPms };
       try { localStorage.setItem('fieldops_roles_pm_meta', JSON.stringify(payloadObj)); } catch (e) {}
 
       if (supabaseClient && isOnline) {
@@ -314,7 +348,8 @@
       if (myCardBtn) {
         if (isAdmin && emp) {
           const empCards = (state.cards || []).filter(c => (c.assigned_employee_id || c.employee_id) === emp.id);
-          const last4 = empCards.length ? ` (•••• ${empCards[0].last4})` : '';
+          const cNum = empCards.length ? (empCards[0].last_four || empCards[0].last4 || '') : '';
+          const last4 = cNum ? ` (•••• ${cNum})` : '';
           const lbl = document.getElementById('menuMyCardLabel');
           if (lbl) lbl.textContent = `My Personal Card${last4}`;
           myCardBtn.classList.remove('hidden');
@@ -323,13 +358,16 @@
         }
       }
 
-      // Show/Hide Feature Buttons by Role
+      // Show/Hide Feature Buttons by Role (Crew Members NEVER see these tabs)
       const pmBtn = document.getElementById('menuFeatPmPortal');
       if (pmBtn) {
         pmBtn.classList.toggle('hidden', !(isAdmin || isPmOrSupv));
         const badge = document.getElementById('pmMenuBadge');
         if (badge) badge.textContent = effRole === 'supervisor' ? 'Supv' : 'PM';
       }
+
+      const futureWrap = document.getElementById('drawerAdminFutureFeatures');
+      if (futureWrap) futureWrap.classList.toggle('hidden', !(isAdmin || isPmOrSupv));
 
       const tcBtn = document.getElementById('menuFeatTimecards');
       if (tcBtn) tcBtn.classList.toggle('hidden', !(isAdmin || isPmOrSupv));
@@ -340,8 +378,11 @@
       const roleMenuBtn = document.getElementById('menuFeatUserRoles');
       if (roleMenuBtn) roleMenuBtn.classList.toggle('hidden', !isAdmin);
 
+      const allowCrewForms = localStorage.getItem('fieldops_allow_crew_forms') === 'true';
       const formsBtn = document.getElementById('menuFeatForms');
-      if (formsBtn) formsBtn.classList.remove('hidden');
+      if (formsBtn) {
+        formsBtn.classList.toggle('hidden', !(isAdmin || isPmOrSupv || allowCrewForms));
+      }
 
       // Render Top Role Quick-Switch Bar for Project Managers & Supervisors
       const quickBar = document.getElementById('roleWorkspaceQuickBar');
@@ -351,7 +392,8 @@
       if (quickBar) {
         if (!isLoggedOut && !isAdmin && isPmOrSupv && emp) {
           const empCards = (state.cards || []).filter(c => (c.assigned_employee_id || c.employee_id) === emp.id);
-          const cardSuffix = empCards.length ? ` (•••• ${empCards[0].last4})` : '';
+          const cNum = empCards.length ? (empCards[0].last_four || empCards[0].last4 || '') : '';
+          const cardSuffix = cNum ? ` (•••• ${cNum})` : '';
           quickBar.classList.remove('hidden');
           quickBar.innerHTML = `
             <div class="flex items-center gap-2">
@@ -375,8 +417,8 @@
         }
       }
 
-      // Auto-route Project Managers & Supervisors to their PM Project Hub when they first log in
-      const sessionKey = isLoggedOut ? null : `${currentRole}_${activeCrewEmployeeId || 'root'}`;
+      // Auto-route Project Managers to their PM Project Hub when they first log in
+      const sessionKey = isLoggedOut ? null : `${effRole}_${activeCrewEmployeeId || 'root'}`;
       if (sessionKey && sessionKey !== lastLoggedInUserSessionKey) {
         lastLoggedInUserSessionKey = sessionKey;
         if (!isAdmin && (effRole === 'pm' || isAssignedPmOnAnyJob)) {
@@ -387,69 +429,15 @@
       }
     }
 
-    // Hook loadStateFromDB so Supabase pulls never wipe out saved User Roles or Job PMs
     const _baseLoadStateFromDB = window.loadStateFromDB;
     if (typeof _baseLoadStateFromDB === 'function') {
       window.loadStateFromDB = async function() {
         const loaded = await _baseLoadStateFromDB.apply(this, arguments);
-        setTimeout(async () => {
+        setTimeout(() => {
           applyStoredRolesSync();
-          await loadPmPortalData();
           refreshRoleUiVisibility();
-        }, 50);
+        }, 30);
         return loaded;
-      };
-    }
-
-    // Hook updateTopBarIndicators so app-core.js never hides Admin/PM menus for appointed users
-    const _baseUpdateTopBarIndicators = window.updateTopBarIndicators;
-    if (typeof _baseUpdateTopBarIndicators === 'function') {
-      window.updateTopBarIndicators = function() {
-        applyStoredRolesSync();
-        if (getActiveUserEffectiveRole() === 'admin' && typeof currentRole !== 'undefined' && currentRole === 'crew') {
-          currentRole = 'admin';
-        }
-        _baseUpdateTopBarIndicators.apply(this, arguments);
-        refreshRoleUiVisibility();
-      };
-    }
-
-    // Hook handleLoginSubmit so logging in as an appointed Admin, PM, or Supervisor immediately applies their role
-    const _baseHandleLoginSubmit = window.handleLoginSubmit;
-    if (typeof _baseHandleLoginSubmit === 'function') {
-      window.handleLoginSubmit = function(event) {
-        applyStoredRolesSync();
-        const selectedUser = document.getElementById('loginUserSelect')?.value;
-        if (selectedUser === 'ADMIN') {
-          activeCrewEmployeeId = null;
-        }
-        _baseHandleLoginSubmit.apply(this, arguments);
-
-        if (selectedUser && selectedUser !== 'ADMIN') {
-          const emp = (state.employees || []).find(e => e.id === selectedUser);
-          const effRole = getEmployeeRole(emp);
-          const rInfo = USER_ROLE_LABELS[effRole] || USER_ROLE_LABELS.crew;
-
-          const drawerRoleEl = document.getElementById('drawerUserRole');
-          if (drawerRoleEl) {
-            drawerRoleEl.textContent = rInfo.label;
-            drawerRoleEl.className = `text-[11px] font-semibold ${rInfo.textClass}`;
-          }
-
-          if (effRole === 'admin') {
-            currentRole = 'admin';
-            adminViewingPersonalCard = false;
-            refreshRoleUiVisibility();
-            openAdminPage('reconcile');
-          } else if (effRole === 'pm') {
-            refreshRoleUiVisibility();
-            selectMenuFeature('pm_portal');
-          } else {
-            refreshRoleUiVisibility();
-          }
-        } else {
-          refreshRoleUiVisibility();
-        }
       };
     }
 
@@ -485,6 +473,7 @@
         j => (j.pm_name || '').trim().toLowerCase() === (emp.full_name || '').trim().toLowerCase()
       );
 
+      // Route 'pm_portal', 'timecards', and 'payroll' directly into the PM Project Hub tabs!
       if (featureKey === 'pm_portal' || featureKey === 'timecards' || featureKey === 'payroll') {
         if (effRole !== 'admin' && effRole !== 'pm' && effRole !== 'supervisor' && !isAssignedPm) {
           closeSideMenu();
@@ -536,8 +525,7 @@
       }
     };
 
-    // Run immediately even if DOMContentLoaded already fired
-    (function initRolesAndPmModuleNow() {
+    (function initRolesAndPmModuleImmediately() {
       applyStoredRolesSync();
       ensureMenuButtonsExist();
       refreshRoleUiVisibility();
@@ -548,6 +536,7 @@
         refreshRoleUiVisibility();
       }, 300);
     })();
+
     function injectRoleButtonIntoPmHeader() {
       const pmSection = document.getElementById('viewPmPortal');
       if (!pmSection || document.getElementById('btnOpenRolesModalInHub')) return;
