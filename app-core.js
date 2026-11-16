@@ -1,4 +1,8 @@
-// GEMINI API KEY (Managed by Admin via UI)
+// =========================================================================
+// ACT MASTER - APP CORE (RESTRICTED ADMIN JOB CREATION & EDITING)
+// =========================================================================
+
+    // GEMINI API KEY (Managed by Admin via UI)
     const GEMINI_API_KEY = "";
 
     if (window.pdfjsLib) {
@@ -23,7 +27,7 @@
       return source.replace(/[^a-zA-Z0-9._\-]/g, '');
     }
 
- let cachedWorkingModel = null;
+  let cachedWorkingModel = null;
 
     async function callGeminiWithFallback(payload) {
       try {
@@ -366,8 +370,8 @@
     ];
 
     const DEFAULT_APPOINTED_ROLES = {
-      'jake textor':   { role: 'admin',      email: 'jake@advconcrete.com' },
-      'eddie varner':  { role: 'pm',         email: '' },
+      'jake textor':    { role: 'admin',     email: 'jake@advconcrete.com' },
+      'eddie varner':  { role: 'pm',          email: '' },
       'gary salyers':  { role: 'supervisor', email: '' },
       'grant gilbert': { role: 'supervisor', email: '' }
     };
@@ -470,29 +474,29 @@
     }
 
   function initSupabaseClient() {
-      const DEFAULT_SB_URL = "https://vvrhtbhpzkvslwqrhsam.supabase.co";
-      const DEFAULT_SB_KEY = "sb_publishable_RnNFl0h-qmZOqoSFJgvO8w_kmzbv9zk";
+    const DEFAULT_SB_URL = "https://vvrhtbhpzkvslwqrhsam.supabase.co";
+    const DEFAULT_SB_KEY = "sb_publishable_RnNFl0h-qmZOqoSFJgvO8w_kmzbv9zk";
 
-      const url = (localStorage.getItem("fieldops_sb_url") || DEFAULT_SB_URL).trim();
-      const key = (localStorage.getItem("fieldops_sb_key") || DEFAULT_SB_KEY).trim();
+    const url = (localStorage.getItem("fieldops_sb_url") || DEFAULT_SB_URL).trim();
+    const key = (localStorage.getItem("fieldops_sb_key") || DEFAULT_SB_KEY).trim();
 
-      const urlInp = document.getElementById("sbUrlInput");
-      const keyInp = document.getElementById("sbKeyInput");
-      if (urlInp && !urlInp.value) urlInp.value = url;
-      if (keyInp && !keyInp.value) keyInp.value = key;
+    const urlInp = document.getElementById("sbUrlInput");
+    const keyInp = document.getElementById("sbKeyInput");
+    if (urlInp && !urlInp.value) urlInp.value = url;
+    if (keyInp && !keyInp.value) keyInp.value = key;
 
-      if (url && key && window.supabase) {
-        try {
-          supabaseClient = window.supabase.createClient(url, key);
-          return true;
-        } catch (e) {
-          supabaseClient = null;
-          return false;
-        }
+    if (url && key && window.supabase) {
+      try {
+        supabaseClient = window.supabase.createClient(url, key);
+        return true;
+      } catch (e) {
+        supabaseClient = null;
+        return false;
       }
-      supabaseClient = null;
-      return false;
     }
+    supabaseClient = null;
+    return false;
+  }
     async function saveSupabaseCredentials() {
       const url = document.getElementById('sbUrlInput').value.trim();
       const key = document.getElementById('sbKeyInput').value.trim();
@@ -756,6 +760,11 @@
       let upserted = 0;
 
       if (type === 'jobs') {
+        // Enforce Admin-only restriction check
+        if (currentRole !== 'admin') {
+          showSimpleToast('Access Denied: Only Admins can import or create jobs.', true);
+          return;
+        }
         for (let i = startIdx; i < rows.length; i++) {
           const cols = rows[i];
           if (!cols.length || !cols[0]) continue;
@@ -2457,6 +2466,11 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
     };
 
     window.toggleJobActiveStatus = async function toggleJobActiveStatus(jobId) {
+      // Restrict job activation/deactivation to Admins only
+      if (currentRole !== 'admin') {
+        showSimpleToast('Access Denied: Only Admins can modify jobs.', true);
+        return;
+      }
       if (!Array.isArray(state.allJobs)) state.allJobs = [...(state.jobs || [])];
       const job = state.allJobs.find(j => j.id === jobId);
       if (!job) return;
@@ -2499,46 +2513,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       showSimpleToast(`"${job.name}" is now ${nextActive ? 'Active' : 'Inactive'}`, !nextActive);
     };
 
-    window.bulkSetJobsActiveStatus = async function bulkSetJobsActiveStatus(makeActive, onlyFiltered = false) {
-      if (!Array.isArray(state.allJobs) || !state.allJobs.length) return;
-
-      const targetJobs = onlyFiltered ? getFilteredAdminJobs() : state.allJobs;
-      if (!targetJobs.length) return showSimpleToast('No jobs match the current filter', true);
-
-      const targetIds = targetJobs.map(j => j.id);
-      const targetIdSet = new Set(targetIds);
-
-      state.allJobs.forEach(j => {
-        if (targetIdSet.has(j.id)) j.active = Boolean(makeActive);
-      });
-      state.jobs = state.allJobs.filter(j => j.active !== false);
-
-      if (!makeActive) {
-        state.costCodes = (state.costCodes || []).filter(c => !targetIdSet.has(c.job_id));
-      }
-
-      if (supabaseClient && isOnline) {
-        showSimpleToast(`${makeActive ? 'Activating' : 'Deactivating'} ${targetIds.length} job(s) in Supabase...`, false);
-        try {
-          // Batch in chunks of 200 IDs so URL length limits are never exceeded
-          for (let i = 0; i < targetIds.length; i += 200) {
-            const chunk = targetIds.slice(i, i + 200);
-            await supabaseClient.from('jobs').update({ active: Boolean(makeActive) }).in('id', chunk);
-            await supabaseClient.from('cost_codes').update({ active: Boolean(makeActive) }).in('job_id', chunk);
-          }
-          if (makeActive) {
-            const { data: activeCcs } = await supabaseClient.from('cost_codes').select('*').eq('active', true).order('name').limit(10000);
-            if (Array.isArray(activeCcs)) state.costCodes = activeCcs;
-          }
-        } catch (e) {}
-      }
-
-      adminSelectedCostCodeJobId = state.jobs[0]?.id || '';
-      await saveState();
-      renderAll();
-      showSimpleToast(`${targetIds.length} Job(s) set to ${makeActive ? 'Active' : 'Inactive'}`, !makeActive);
-    };
-
     function getFilteredAdminJobs() {
       const all = Array.isArray(state.allJobs) && state.allJobs.length ? state.allJobs : (state.jobs || []);
       const q = (adminJobSearchQuery || '').toLowerCase();
@@ -2555,6 +2529,11 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
     }
 
     async function addJobName() {
+      // Restrict job creation exclusively to Admins
+      if (currentRole !== 'admin') {
+        showSimpleToast('Access Denied: Only Administrators can create jobs.', true);
+        return;
+      }
       const v = document.getElementById('newJobNameInput').value.trim();
       if (!v) return;
       const numMatch = v.match(/^([0-9]{2,4}[\-][0-9A-Za-z]+)\s+(.+)$/);
@@ -2577,6 +2556,10 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
     }
 
     async function removeJobName(id) {
+      if (currentRole !== 'admin') {
+        showSimpleToast('Access Denied: Only Administrators can remove jobs.', true);
+        return;
+      }
       if (Array.isArray(state.allJobs)) {
         state.allJobs = state.allJobs.filter(j => j.id !== id);
       }
@@ -3175,14 +3158,16 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         bar.innerHTML = `
           <div class="flex flex-wrap items-center justify-between gap-1.5">
             <div id="adminJobsFilterPills" class="flex flex-wrap items-center gap-1"></div>
-            <div class="flex items-center gap-1">
-              <button type="button" onclick="bulkSetJobsActiveStatus(false, true)" title="Set all currently shown jobs to Inactive" class="px-2 py-1 rounded-lg bg-amber-950/70 hover:bg-amber-900/80 text-amber-300 border border-amber-500/30 font-bold text-[10px]">
-                Deactivate Shown
-              </button>
-              <button type="button" onclick="bulkSetJobsActiveStatus(true, true)" title="Set all currently shown jobs to Active" class="px-2 py-1 rounded-lg bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-500/30 font-bold text-[10px]">
-                Activate Shown
-              </button>
-            </div>
+            ${currentRole === 'admin' ? `
+              <div class="flex items-center gap-1">
+                <button type="button" onclick="bulkSetJobsActiveStatus(false, true)" title="Set all currently shown jobs to Inactive" class="px-2 py-1 rounded-lg bg-amber-950/70 hover:bg-amber-900/80 text-amber-300 border border-amber-500/30 font-bold text-[10px]">
+                  Deactivate Shown
+                </button>
+                <button type="button" onclick="bulkSetJobsActiveStatus(true, true)" title="Set all currently shown jobs to Active" class="px-2 py-1 rounded-lg bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-500/30 font-bold text-[10px]">
+                  Activate Shown
+                </button>
+              </div>
+            ` : ''}
           </div>
           <input
             type="text"
@@ -3239,14 +3224,22 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
               ${isActive ? `<span class="text-[10px] font-mono text-slate-400">(${ccCount} codes)</span>` : ''}
             </div>
             <div class="flex items-center gap-1.5 shrink-0">
-              <button type="button" onclick="event.stopPropagation(); toggleJobActiveStatus('${j.id}')" class="px-2.5 py-1 rounded-lg ${isActive ? 'bg-amber-950/70 hover:bg-amber-900 text-amber-300 border border-amber-500/30' : 'bg-emerald-950/70 hover:bg-emerald-900 text-emerald-300 border border-emerald-500/30'} font-bold text-[11px]">
-                ${isActive ? 'Deactivate' : 'Activate'}
-              </button>
-              <button type="button" onclick="event.stopPropagation(); removeJobName('${j.id}')" class="text-red-400 hover:text-red-300 font-bold px-1.5">✕</button>
+              ${currentRole === 'admin' ? `
+                <button type="button" onclick="event.stopPropagation(); toggleJobActiveStatus('${j.id}')" class="px-2.5 py-1 rounded-lg ${isActive ? 'bg-amber-950/70 hover:bg-amber-900 text-amber-300 border border-amber-500/30' : 'bg-emerald-950/70 hover:bg-emerald-900 text-emerald-300 border border-emerald-500/30'} font-bold text-[11px]">
+                  ${isActive ? 'Deactivate' : 'Activate'}
+                </button>
+                <button type="button" onclick="event.stopPropagation(); removeJobName('${j.id}')" class="text-red-400 hover:text-red-300 font-bold px-1.5">✕</button>
+              ` : ''}
             </div>
           </div>
         `;
       }).join('') || `<p class="text-xs text-slate-500 py-3 text-center">No ${adminJobStatusFilter !== 'all' ? adminJobStatusFilter : ''} jobs match your search.</p>`;
+
+      // Hide job creation input form container entirely if user is not an Admin
+      const createJobFormContainer = document.getElementById('adminCreateJobFormContainer');
+      if (createJobFormContainer) {
+        createJobFormContainer.style.display = (currentRole === 'admin') ? 'block' : 'none';
+      }
     }
 
     function renderAdminCostCodesListOnly() {
@@ -3275,7 +3268,7 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
           <div>
             <span class="text-white font-medium">${c.name}</span>
           </div>
-          <button onclick="removeCostCode('${c.id}')" class="text-red-400 font-bold px-2">✕</button>
+          ${currentRole === 'admin' ? `<button onclick="removeCostCode('${c.id}')" class="text-red-400 font-bold px-2">✕</button>` : ''}
         </div>`
       ).join('') || `<p class="text-xs text-slate-500 py-2">No cost codes linked to ${selectedJobObj ? selectedJobObj.name : 'this job'}.</p>`);
     }
