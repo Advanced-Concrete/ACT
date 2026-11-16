@@ -407,7 +407,7 @@
         employees.push({ id: empId, sage_emp_id: null, full_name: item.name, pin: item.pin, role: presetRole, email: presetEmail, active: true });
         cards.push({ id: cardId, last_four: item.last4, assigned_employee_id: empId });
       });
-      return { jobs: [], costCodes: [], employees, cards, statementLines: [], offlineQueue: [], ocrApiKey: '' };
+      return { jobs: [], allJobs: [], costCodes: [], employees, cards, statementLines: [], offlineQueue: [], ocrApiKey: '' };
     }
 
     function ensurePreloadedRoster(loadedState) {
@@ -428,6 +428,15 @@
         });
       }
       if (!Array.isArray(loadedState.jobs)) loadedState.jobs = [];
+      if (!Array.isArray(loadedState.allJobs) || loadedState.allJobs.length === 0) {
+        loadedState.allJobs = loadedState.jobs.map(j => ({ ...j, active: j.active !== false }));
+      } else {
+        loadedState.allJobs.forEach(j => {
+          if (typeof j.active !== 'boolean') j.active = true;
+        });
+      }
+      // Keep state.jobs strictly as Active jobs so Receipts, PDF Forms, PM Hub & Time Cards never show inactive jobs
+      loadedState.jobs = loadedState.allJobs.filter(j => j.active !== false);
       if (!Array.isArray(loadedState.costCodes)) loadedState.costCodes = [];
       if (!Array.isArray(loadedState.statementLines)) loadedState.statementLines = [];
       if (!Array.isArray(loadedState.offlineQueue)) loadedState.offlineQueue = [];
@@ -549,18 +558,37 @@
 
       if (initSupabaseClient() && isOnline) {
         try {
+          try { await supabaseClient.rpc('sync_sage_master_to_app'); } catch (e) {}
+
           const [empRes, cardRes, jobRes, ccRes, stmtRes, cfgRes] = await Promise.all([
             supabaseClient.from('employees').select('*').order('full_name'),
             supabaseClient.from('cards').select('*'),
-            supabaseClient.from('jobs').select('*').eq('active', true).order('name'),
-            supabaseClient.from('cost_codes').select('*').eq('active', true).order('name'),
+            supabaseClient.from('jobs').select('*').order('name').limit(5000),
+            supabaseClient.from('cost_codes').select('*').eq('active', true).order('name').limit(10000),
             supabaseClient.from('statement_lines').select('*').order('post_date', { ascending: false }),
             supabaseClient.from('app_settings').select('ocr_api_key').eq('id', 'global').maybeSingle()
           ]);
 
           if (!empRes.error && empRes.data?.length) localState.employees = empRes.data;
           if (!cardRes.error && cardRes.data?.length) localState.cards = cardRes.data;
-          if (!jobRes.error && jobRes.data) localState.jobs = jobRes.data;
+          if (!jobRes.error && jobRes.data) {
+            localState.allJobs = jobRes.data.map(j => ({ ...j, active: j.active !== false }));
+            localState.jobs = localState.allJobs.filter(j => j.active !== false);
+            // Sync Sage Job PM assignments into localStorage roles_pm_meta so PM Hub immediately reflects them
+            try {
+              const rawMeta = localStorage.getItem('fieldops_roles_pm_meta');
+              const meta = rawMeta ? JSON.parse(rawMeta) : { v3_fixed: true, empRoles: {}, jobPms: {} };
+              meta.jobPms = meta.jobPms || {};
+              localState.allJobs.forEach(j => {
+                if (j.pm_name) {
+                  const entry = { pm_name: j.pm_name, pm_email: j.pm_email || '', pm_employee_id: j.pm_employee_id || '' };
+                  meta.jobPms[j.id] = entry;
+                  meta.jobPms[j.name] = entry;
+                }
+              });
+              localStorage.setItem('fieldops_roles_pm_meta', JSON.stringify(meta));
+            } catch (e) {}
+          }
           if (!ccRes.error && ccRes.data) localState.costCodes = ccRes.data;
           if (!stmtRes.error && stmtRes.data) {
             localState.statementLines = stmtRes.data.map(row => ({
@@ -597,6 +625,18 @@
     }
 
     async function saveState() {
+      if (!Array.isArray(state.allJobs)) state.allJobs = [];
+      (state.jobs || []).forEach(j => {
+        const existing = state.allJobs.find(aj => aj.id === j.id);
+        if (!existing) {
+          state.allJobs.push({ ...j, active: j.active !== false });
+        } else {
+          if (j.pm_name !== undefined) existing.pm_name = j.pm_name;
+          if (j.pm_email !== undefined) existing.pm_email = j.pm_email;
+          if (j.pm_employee_id !== undefined) existing.pm_employee_id = j.pm_employee_id;
+        }
+      });
+      state.jobs = state.allJobs.filter(j => j.active !== false);
       updateTopBarIndicators();
       try {
         const db = await openDatabase();
@@ -633,7 +673,7 @@
             }))
           ) : Promise.resolve(),
 
-          state.jobs.length ? supabaseClient.from('jobs').upsert(
+          (state.jobs.length && state.jobs.length <= 100) ? supabaseClient.from('jobs').upsert(
             state.jobs.map(j => ({
               id: j.id,
               sage_job_number: j.sage_job_number || null,
@@ -641,13 +681,15 @@
               pm_employee_id: j.pm_employee_id || null,
               pm_name: j.pm_name || null,
               pm_email: j.pm_email || null,
-              active: true
+              active: j.active !== false
             }))
           ) : Promise.resolve(),
 
-          state.costCodes.length ? supabaseClient.from('cost_codes').upsert(
+          (state.costCodes.length && state.costCodes.length <= 250) ? supabaseClient.from('cost_codes').upsert(
             state.costCodes.map(c => ({
               id: c.id,
+              job_id: c.job_id || null,
+              sage_job_number: c.sage_job_number || null,
               sage_cost_code: c.sage_cost_code || null,
               name: c.name,
               active: true
@@ -725,7 +767,7 @@
             continue;
           }
 
-          const combinedName = jobDesc && !jobNum.toLowerCase().includes(jobDesc.toLowerCase()) ? `${jobNum} ${jobDesc}` : jobNum;
+          const combinedName = jobDesc || jobNum;
           const existing = state.jobs.find(j => (j.sage_job_number && j.sage_job_number === jobNum) || j.name.toLowerCase() === combinedName.toLowerCase());
           if (existing) {
             existing.name = combinedName;
@@ -1854,11 +1896,19 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       const card = displayLast4 ? state.cards.find(c => c.last_four === displayLast4) : null;
       const emp = card ? state.employees.find(e => e.id === card.assigned_employee_id) : null;
 
+      const currentAssignedJob = item.job_id ? findJobAnywhere(item.job_id) : null;
+      const modalJobsPool = [...state.jobs];
+      if (currentAssignedJob && !modalJobsPool.some(j => j.id === currentAssignedJob.id)) {
+        modalJobsPool.unshift(currentAssignedJob);
+      }
       const jobOptions = `<option value="">-- Select Job Name (Required) --</option>` +
-        state.jobs.map(j => `<option value="${j.id}" ${item.job_id === j.id ? 'selected' : ''}>${j.name}</option>`).join('');
+        modalJobsPool.map(j => `<option value="${j.id}" ${item.job_id === j.id ? 'selected' : ''}>${j.name}${j.active === false ? ' (Inactive)' : ''}</option>`).join('');
 
-      const ccOptions = `<option value="">-- Select Cost Code (Required) --</option>` +
-        state.costCodes.map(c => `<option value="${c.id}" ${item.cost_code_id === c.id ? 'selected' : ''}>${c.name}</option>`).join('');
+      const jobCostCodes = getCostCodesForJob(item.job_id);
+      const ccOptions = item.job_id
+        ? (`<option value="">-- Select Cost Code (${jobCostCodes.length} for this Job) --</option>` +
+           jobCostCodes.map(c => `<option value="${c.id}" ${item.cost_code_id === c.id ? 'selected' : ''}>${c.name}</option>`).join(''))
+        : `<option value="">-- Select a Job Name First --</option>`;
 
       const openStatements = state.statementLines.filter(s => s.id !== item.id && !s.receipt_image);
       const manualAssignOptions = `<option value="">-- Keep Current / Select Statement Line to Link --</option>` +
@@ -2016,10 +2066,72 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       viewReceiptModal(itemId);
     }
 
+    window.findJobAnywhere = function findJobAnywhere(jobIdOrName) {
+      if (!jobIdOrName) return null;
+      const targetStr = String(jobIdOrName).trim().toLowerCase();
+      const pool = (Array.isArray(state.allJobs) && state.allJobs.length) ? state.allJobs : (state.jobs || []);
+      return pool.find(j =>
+        String(j.id || '').trim().toLowerCase() === targetStr ||
+        String(j.name || '').trim().toLowerCase() === targetStr ||
+        (j.sage_job_number && String(j.sage_job_number).trim().toLowerCase() === targetStr)
+      ) || null;
+    };
+
+    window.getCostCodesForJob = function getCostCodesForJob(jobIdOrName) {
+      if (!jobIdOrName || jobIdOrName === 'ALL') return [];
+      const job = findJobAnywhere(jobIdOrName);
+      if (!job) return [];
+      const jobIdLower = String(job.id || '').trim().toLowerCase();
+      const sageJobLower = job.sage_job_number ? String(job.sage_job_number).trim().toLowerCase() : '';
+
+      const matching = (state.costCodes || []).filter(c => {
+        const cJobId = String(c.job_id || '').trim().toLowerCase();
+        const cSageJob = String(c.sage_job_number || '').trim().toLowerCase();
+        if (cJobId && cJobId === jobIdLower) return true;
+        if (sageJobLower && cSageJob && cSageJob === sageJobLower) return true;
+        return false;
+      });
+
+      // If no cost codes are in memory yet for this job and we are online, fetch them on-demand from Supabase
+      if (matching.length === 0 && supabaseClient && isOnline && !job._fetchedCodesOnce) {
+        job._fetchedCodesOnce = true;
+        supabaseClient
+          .from('cost_codes')
+          .select('*')
+          .or(`job_id.eq.${job.id}${job.sage_job_number ? `,sage_job_number.eq.${job.sage_job_number}` : ''}`)
+          .order('name')
+          .then(({ data }) => {
+            if (Array.isArray(data) && data.length) {
+              const existingIds = new Set((state.costCodes || []).map(c => c.id));
+              data.forEach(c => {
+                if (!existingIds.has(c.id)) state.costCodes.push(c);
+              });
+              updateCrewCostCodeDropdown();
+              renderAdminView();
+            }
+          })
+          .catch(() => {});
+      }
+
+      return matching;
+    };
+
     async function updateItemCoding(itemId, key, val) {
       const item = state.statementLines.find(x => x.id === itemId);
       if (!item) return;
       item[key] = val || null;
+
+      if (key === 'job_id') {
+        const validCodes = getCostCodesForJob(item.job_id);
+        if (item.cost_code_id && !validCodes.some(c => c.id === item.cost_code_id)) {
+          const prevCc = state.costCodes.find(c => c.id === item.cost_code_id);
+          const sameCodeInNewJob = prevCc && prevCc.sage_cost_code
+            ? validCodes.find(c => c.sage_cost_code === prevCc.sage_cost_code)
+            : null;
+          item.cost_code_id = sameCodeInNewJob ? sameCodeInNewJob.id : null;
+        }
+      }
+
       refreshItemStatus(item);
       await saveState();
       renderAll();
@@ -2331,22 +2443,145 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       showSimpleToast('Employee Removed', true);
     }
 
+    let adminJobStatusFilter = 'active';
+    let adminJobSearchQuery = '';
+
+    window.setAdminJobStatusFilter = function setAdminJobStatusFilter(filterKey) {
+      adminJobStatusFilter = filterKey;
+      renderAdminView();
+    };
+
+    window.handleAdminJobSearchInput = function handleAdminJobSearchInput(val) {
+      adminJobSearchQuery = (val || '').trim();
+      renderAdminJobsListOnly();
+    };
+
+    window.toggleJobActiveStatus = async function toggleJobActiveStatus(jobId) {
+      if (!Array.isArray(state.allJobs)) state.allJobs = [...(state.jobs || [])];
+      const job = state.allJobs.find(j => j.id === jobId);
+      if (!job) return;
+
+      const nextActive = job.active === false ? true : false;
+      job.active = nextActive;
+      state.jobs = state.allJobs.filter(j => j.active !== false);
+
+      if (supabaseClient && isOnline) {
+        try {
+          await supabaseClient.from('jobs').update({ active: nextActive }).eq('id', jobId);
+          await supabaseClient.from('cost_codes').update({ active: nextActive }).eq('job_id', jobId);
+          if (nextActive) {
+            const { data: ccs } = await supabaseClient
+              .from('cost_codes')
+              .select('*')
+              .or(`job_id.eq.${job.id}${job.sage_job_number ? `,sage_job_number.eq.${job.sage_job_number}` : ''}`)
+              .order('name');
+            if (Array.isArray(ccs) && ccs.length) {
+              const existingIds = new Set((state.costCodes || []).map(c => c.id));
+              ccs.forEach(c => {
+                c.active = true;
+                if (!existingIds.has(c.id)) state.costCodes.push(c);
+              });
+            }
+          } else {
+            state.costCodes = (state.costCodes || []).filter(c => c.job_id !== jobId && (!job.sage_job_number || c.sage_job_number !== job.sage_job_number));
+          }
+        } catch (e) {}
+      }
+
+      if (nextActive) {
+        adminSelectedCostCodeJobId = job.id;
+      } else if (adminSelectedCostCodeJobId === job.id) {
+        adminSelectedCostCodeJobId = state.jobs[0]?.id || '';
+      }
+
+      await saveState();
+      renderAll();
+      showSimpleToast(`"${job.name}" is now ${nextActive ? 'Active' : 'Inactive'}`, !nextActive);
+    };
+
+    window.bulkSetJobsActiveStatus = async function bulkSetJobsActiveStatus(makeActive, onlyFiltered = false) {
+      if (!Array.isArray(state.allJobs) || !state.allJobs.length) return;
+
+      const targetJobs = onlyFiltered ? getFilteredAdminJobs() : state.allJobs;
+      if (!targetJobs.length) return showSimpleToast('No jobs match the current filter', true);
+
+      const targetIds = targetJobs.map(j => j.id);
+      const targetIdSet = new Set(targetIds);
+
+      state.allJobs.forEach(j => {
+        if (targetIdSet.has(j.id)) j.active = Boolean(makeActive);
+      });
+      state.jobs = state.allJobs.filter(j => j.active !== false);
+
+      if (!makeActive) {
+        state.costCodes = (state.costCodes || []).filter(c => !targetIdSet.has(c.job_id));
+      }
+
+      if (supabaseClient && isOnline) {
+        showSimpleToast(`${makeActive ? 'Activating' : 'Deactivating'} ${targetIds.length} job(s) in Supabase...`, false);
+        try {
+          // Batch in chunks of 200 IDs so URL length limits are never exceeded
+          for (let i = 0; i < targetIds.length; i += 200) {
+            const chunk = targetIds.slice(i, i + 200);
+            await supabaseClient.from('jobs').update({ active: Boolean(makeActive) }).in('id', chunk);
+            await supabaseClient.from('cost_codes').update({ active: Boolean(makeActive) }).in('job_id', chunk);
+          }
+          if (makeActive) {
+            const { data: activeCcs } = await supabaseClient.from('cost_codes').select('*').eq('active', true).order('name').limit(10000);
+            if (Array.isArray(activeCcs)) state.costCodes = activeCcs;
+          }
+        } catch (e) {}
+      }
+
+      adminSelectedCostCodeJobId = state.jobs[0]?.id || '';
+      await saveState();
+      renderAll();
+      showSimpleToast(`${targetIds.length} Job(s) set to ${makeActive ? 'Active' : 'Inactive'}`, !makeActive);
+    };
+
+    function getFilteredAdminJobs() {
+      const all = Array.isArray(state.allJobs) && state.allJobs.length ? state.allJobs : (state.jobs || []);
+      const q = (adminJobSearchQuery || '').toLowerCase();
+      return all.filter(j => {
+        const isAct = j.active !== false;
+        if (adminJobStatusFilter === 'active' && !isAct) return false;
+        if (adminJobStatusFilter === 'inactive' && isAct) return false;
+        if (q) {
+          const hay = `${j.name || ''} ${j.sage_job_number || ''} ${j.pm_name || ''}`.toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+    }
+
     async function addJobName() {
       const v = document.getElementById('newJobNameInput').value.trim();
       if (!v) return;
       const numMatch = v.match(/^([0-9]{2,4}[\-][0-9A-Za-z]+)\s+(.+)$/);
-      state.jobs.push({
+      const newJob = {
         id: 'job-' + Date.now(),
         sage_job_number: numMatch ? numMatch[1] : null,
-        name: v
-      });
+        name: numMatch ? numMatch[2].trim() : v,
+        active: true
+      };
+      if (!Array.isArray(state.allJobs)) state.allJobs = [...(state.jobs || [])];
+      state.allJobs.unshift(newJob);
+      state.jobs = state.allJobs.filter(j => j.active !== false);
+      adminSelectedCostCodeJobId = newJob.id;
       document.getElementById('newJobNameInput').value = '';
+      if (supabaseClient && isOnline) {
+        try { await supabaseClient.from('jobs').upsert(newJob); } catch (e) {}
+      }
       await saveState();
       renderAll();
     }
 
     async function removeJobName(id) {
-      state.jobs = state.jobs.filter(j => j.id !== id);
+      if (Array.isArray(state.allJobs)) {
+        state.allJobs = state.allJobs.filter(j => j.id !== id);
+      }
+      state.jobs = (state.jobs || []).filter(j => j.id !== id);
+      state.costCodes = (state.costCodes || []).filter(c => c.job_id !== id);
       await deleteSupabaseRecord('jobs', id);
       await saveState();
       renderAll();
@@ -2356,12 +2591,20 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       const v = document.getElementById('newCostCodeInput').value.trim();
       if (!v) return;
       const codeMatch = v.match(/^([0-9A-Za-z.\-]+)\s+(.+)$/);
-      state.costCodes.push({
+      const jobObj = findJobAnywhere(adminSelectedCostCodeJobId);
+      const newCc = {
         id: 'cc-' + Date.now(),
+        job_id: jobObj ? jobObj.id : null,
+        sage_job_number: jobObj ? (jobObj.sage_job_number || null) : null,
         sage_cost_code: codeMatch ? codeMatch[1] : null,
-        name: v
-      });
+        name: v,
+        active: true
+      };
+      state.costCodes.push(newCc);
       document.getElementById('newCostCodeInput').value = '';
+      if (supabaseClient && isOnline) {
+        try { await supabaseClient.from('cost_codes').upsert(newCc); } catch (e) {}
+      }
       await saveState();
       renderAll();
     }
@@ -2734,6 +2977,40 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
       renderAdminView();
     }
 
+    let adminSelectedCostCodeJobId = '';
+
+    function updateCrewCostCodeDropdown() {
+      const crewJobEl = document.getElementById('crewJobSelect');
+      const crewCcEl = document.getElementById('crewCostCodeSelect');
+      if (!crewCcEl) return;
+      const selectedJobId = crewJobEl ? crewJobEl.value : '';
+      const prevCcId = crewCcEl.value;
+
+      if (!selectedJobId) {
+        crewCcEl.innerHTML = `<option value="">-- Select a Job Name First --</option>`;
+        return;
+      }
+
+      const jobCodes = getCostCodesForJob(selectedJobId);
+      crewCcEl.innerHTML = jobCodes.length
+        ? `<option value="">-- Select Cost Code (${jobCodes.length} available) --</option>` +
+          jobCodes.map(c => `<option value="${c.id}" ${c.id === prevCcId ? 'selected' : ''}>${c.name}</option>`).join('')
+        : `<option value="">-- No Cost Codes Found for This Job --</option>`;
+    }
+
+    // Automatically filter #logHrCc in Log Project Hours modal whenever #logHrJob changes
+    document.addEventListener('change', e => {
+      if (e.target && e.target.id === 'logHrJob') {
+        const ccSel = document.getElementById('logHrCc');
+        if (!ccSel) return;
+        const jobCodes = getCostCodesForJob(e.target.value);
+        ccSel.innerHTML = jobCodes.length
+          ? `<option value="">-- Cost Code (${jobCodes.length}) --</option>` +
+            jobCodes.map(c => `<option value="${c.name.replace(/"/g, '&quot;')}">${c.name}</option>`).join('')
+          : `<option value="">-- No Cost Codes for Job --</option>`;
+      }
+    });
+
     function renderCrewView() {
       const emp = state.employees.find(e => e.id === activeCrewEmployeeId) || state.employees.find(e => e.active !== false) || state.employees[0];
       const card = emp ? state.cards.find(c => c.assigned_employee_id === emp.id) : null;
@@ -2747,13 +3024,15 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         `<div>${m.vendor || 'Unknown'} — <strong>$${Number(m.amount || 0).toFixed(2)}</strong> (${m.post_date || 'No Date'})</div>`
       ).join('');
 
-      document.getElementById('crewJobSelect').innerHTML = state.jobs.length
-        ? `<option value="">-- Select Job Name --</option>` + state.jobs.map(j => `<option value="${j.id}">${j.name}</option>`).join('')
-        : `<option value="">-- Add or Import Sage Jobs in Admin View --</option>`;
-
-      document.getElementById('crewCostCodeSelect').innerHTML = state.costCodes.length
-        ? `<option value="">-- Select Cost Code --</option>` + state.costCodes.map(c => `<option value="${c.id}">${c.name}</option>`).join('')
-        : `<option value="">-- Add or Import Cost Codes in Admin View --</option>`;
+      const crewJobEl = document.getElementById('crewJobSelect');
+      const prevCrewJobId = crewJobEl ? crewJobEl.value : '';
+      if (crewJobEl) {
+        crewJobEl.innerHTML = state.jobs.length
+          ? `<option value="">-- Select Job Name --</option>` + state.jobs.map(j => `<option value="${j.id}" ${j.id === prevCrewJobId ? 'selected' : ''}>${j.name}</option>`).join('')
+          : `<option value="">-- Add or Import Sage Jobs in Admin View --</option>`;
+        crewJobEl.onchange = () => updateCrewCostCodeDropdown();
+      }
+      updateCrewCostCodeDropdown();
 
       const myUploaded = state.statementLines.filter(s => s.receipt_image && (!card || !s.last_four || s.last_four === card.last_four));
       document.getElementById('crewHistoryList').innerHTML = myUploaded.map(s => {
@@ -2761,7 +3040,7 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         const a = (s.ocr_amount !== null && s.ocr_amount !== undefined) ? s.ocr_amount : s.amount;
         const d = s.ocr_post_date || s.post_date;
         const c4 = s.ocr_last_four || s.last_four;
-        const job = state.jobs.find(j => j.id === s.job_id);
+        const job = findJobAnywhere(s.job_id);
         const cc = state.costCodes.find(c => c.id === s.cost_code_id);
         return `
           <div onclick="viewReceiptModal('${s.id}')" class="cursor-pointer p-2.5 rounded-xl bg-slate-900 border ${s.status === 'matched' ? 'border-emerald-500/40' : 'border-amber-500/40'} flex items-center justify-between gap-2 text-xs hover:bg-slate-800">
@@ -2815,7 +3094,7 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
 
         const card = displayLast4 ? state.cards.find(c => c.last_four === displayLast4) : null;
         const emp = card ? state.employees.find(e => e.id === card.assigned_employee_id) : null;
-        const job = state.jobs.find(j => j.id === line.job_id);
+        const job = findJobAnywhere(line.job_id);
         const cc = state.costCodes.find(c => c.id === line.cost_code_id);
 
         return `
@@ -2875,25 +3154,130 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         </tr>`;
       }).join('') || `<tr><td colspan="4" class="py-3 text-center text-slate-500">No employees added yet.</td></tr>`;
 
-      document.getElementById('adminJobsList').innerHTML = state.jobs.map(j =>
-        `<div class="flex justify-between items-center bg-slate-900 px-3 py-2 rounded-xl text-xs">
-          <div>
-            <span class="text-white font-medium">${j.name}</span>
-            ${j.sage_job_number ? `<span class="ml-1.5 text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300">Sage #${j.sage_job_number}</span>` : ''}
-          </div>
-          <button onclick="removeJobName('${j.id}')" class="text-red-400 font-bold px-2">✕</button>
-        </div>`
-      ).join('') || `<p class="text-xs text-slate-500">No jobs added yet.</p>`;
+      if (!adminSelectedCostCodeJobId && state.jobs.length) {
+        adminSelectedCostCodeJobId = state.jobs[0].id;
+      }
 
-      document.getElementById('adminCostCodesList').innerHTML = state.costCodes.map(c =>
+      ensureAdminJobsToolbarExists();
+      renderAdminJobsListOnly();
+      renderAdminCostCodesListOnly();
+    }
+
+    function ensureAdminJobsToolbarExists() {
+      const jobsListEl = document.getElementById('adminJobsList');
+      if (!jobsListEl || !jobsListEl.parentNode) return;
+      jobsListEl.className = 'space-y-1.5 max-h-80 overflow-y-auto custom-scroll pt-1';
+
+      if (!document.getElementById('adminJobsFilterToolbar')) {
+        const bar = document.createElement('div');
+        bar.id = 'adminJobsFilterToolbar';
+        bar.className = 'space-y-2 pt-1';
+        bar.innerHTML = `
+          <div class="flex flex-wrap items-center justify-between gap-1.5">
+            <div id="adminJobsFilterPills" class="flex flex-wrap items-center gap-1"></div>
+            <div class="flex items-center gap-1">
+              <button type="button" onclick="bulkSetJobsActiveStatus(false, true)" title="Set all currently shown jobs to Inactive" class="px-2 py-1 rounded-lg bg-amber-950/70 hover:bg-amber-900/80 text-amber-300 border border-amber-500/30 font-bold text-[10px]">
+                Deactivate Shown
+              </button>
+              <button type="button" onclick="bulkSetJobsActiveStatus(true, true)" title="Set all currently shown jobs to Active" class="px-2 py-1 rounded-lg bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-500/30 font-bold text-[10px]">
+                Activate Shown
+              </button>
+            </div>
+          </div>
+          <input
+            type="text"
+            id="adminJobsSearchInput"
+            placeholder="Search jobs by description, Sage #, or PM..."
+            oninput="handleAdminJobSearchInput(this.value)"
+            class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-emerald-500"
+          />
+        `;
+        jobsListEl.parentNode.insertBefore(bar, jobsListEl);
+      }
+    }
+
+    function renderAdminJobsListOnly() {
+      const jobsListEl = document.getElementById('adminJobsList');
+      if (!jobsListEl) return;
+
+      const allPool = Array.isArray(state.allJobs) && state.allJobs.length ? state.allJobs : (state.jobs || []);
+      const activeCount = allPool.filter(j => j.active !== false).length;
+      const inactiveCount = allPool.length - activeCount;
+
+      const pillsEl = document.getElementById('adminJobsFilterPills');
+      if (pillsEl) {
+        const pillClass = (key, activeColor) =>
+          adminJobStatusFilter === key
+            ? `px-2.5 py-1 rounded-lg text-[11px] font-bold ${activeColor} shadow`
+            : 'px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-900 text-slate-400 hover:text-white border border-slate-700';
+
+        pillsEl.innerHTML = `
+          <button type="button" onclick="setAdminJobStatusFilter('active')" class="${pillClass('active', 'bg-emerald-600 text-white')}">
+            Active (${activeCount})
+          </button>
+          <button type="button" onclick="setAdminJobStatusFilter('inactive')" class="${pillClass('inactive', 'bg-amber-600 text-slate-950')}">
+            Inactive (${inactiveCount})
+          </button>
+          <button type="button" onclick="setAdminJobStatusFilter('all')" class="${pillClass('all', 'bg-indigo-600 text-white')}">
+            All (${allPool.length})
+          </button>
+        `;
+      }
+
+      const filteredJobs = getFilteredAdminJobs();
+
+      jobsListEl.innerHTML = filteredJobs.map(j => {
+        const isActive = j.active !== false;
+        const ccCount = isActive ? getCostCodesForJob(j.id).length : 0;
+        return `
+          <div onclick="adminSelectedCostCodeJobId='${j.id}'; renderAdminView();" class="cursor-pointer flex justify-between items-center gap-2 bg-slate-900 hover:bg-slate-800/90 border ${adminSelectedCostCodeJobId === j.id ? 'border-emerald-500/50' : 'border-slate-800'} ${isActive ? '' : 'opacity-65'} px-3 py-2 rounded-xl text-xs transition">
+            <div class="flex flex-wrap items-center gap-1.5 min-w-0">
+              <span class="text-white font-semibold truncate">${j.name}</span>
+              ${j.sage_job_number ? `<span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300">#${j.sage_job_number}</span>` : ''}
+              ${j.pm_name ? `<span class="text-[10px] font-semibold px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">PM: ${j.pm_name}</span>` : ''}
+              <span class="px-1.5 py-0.5 rounded text-[10px] font-bold ${isActive ? 'bg-emerald-500/20 text-emerald-300' : 'bg-amber-500/20 text-amber-300'}">${isActive ? 'Active' : 'Inactive'}</span>
+              ${isActive ? `<span class="text-[10px] font-mono text-slate-400">(${ccCount} codes)</span>` : ''}
+            </div>
+            <div class="flex items-center gap-1.5 shrink-0">
+              <button type="button" onclick="event.stopPropagation(); toggleJobActiveStatus('${j.id}')" class="px-2.5 py-1 rounded-lg ${isActive ? 'bg-amber-950/70 hover:bg-amber-900 text-amber-300 border border-amber-500/30' : 'bg-emerald-950/70 hover:bg-emerald-900 text-emerald-300 border border-emerald-500/30'} font-bold text-[11px]">
+                ${isActive ? 'Deactivate' : 'Activate'}
+              </button>
+              <button type="button" onclick="event.stopPropagation(); removeJobName('${j.id}')" class="text-red-400 hover:text-red-300 font-bold px-1.5">✕</button>
+            </div>
+          </div>
+        `;
+      }).join('') || `<p class="text-xs text-slate-500 py-3 text-center">No ${adminJobStatusFilter !== 'all' ? adminJobStatusFilter : ''} jobs match your search.</p>`;
+    }
+
+    function renderAdminCostCodesListOnly() {
+      const ccListEl = document.getElementById('adminCostCodesList');
+      if (!ccListEl) return;
+
+      const selectedJobObj = findJobAnywhere(adminSelectedCostCodeJobId);
+      const adminFilteredCodes = adminSelectedCostCodeJobId ? getCostCodesForJob(adminSelectedCostCodeJobId) : [];
+
+      const dropdownPool = [...state.jobs];
+      if (selectedJobObj && !dropdownPool.some(j => j.id === selectedJobObj.id)) {
+        dropdownPool.unshift(selectedJobObj);
+      }
+
+      const jobFilterHeader = dropdownPool.length
+        ? `<div class="mb-2">
+             <label class="block text-[10px] font-bold uppercase text-emerald-400 mb-1">Viewing Cost Codes For Job:</label>
+             <select onchange="adminSelectedCostCodeJobId=this.value; renderAdminCostCodesListOnly();" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-2.5 py-2 text-xs text-white font-semibold">
+               ${dropdownPool.map(j => `<option value="${j.id}" ${j.id === adminSelectedCostCodeJobId ? 'selected' : ''}>${j.name}${j.active === false ? ' (Inactive)' : ''} (${getCostCodesForJob(j.id).length} codes)</option>`).join('')}
+             </select>
+           </div>`
+        : '';
+
+      ccListEl.innerHTML = jobFilterHeader + (adminFilteredCodes.map(c =>
         `<div class="flex justify-between items-center bg-slate-900 px-3 py-2 rounded-xl text-xs">
           <div>
             <span class="text-white font-medium">${c.name}</span>
-            ${c.sage_cost_code ? `<span class="ml-1.5 text-[10px] font-mono px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300">Code #${c.sage_cost_code}</span>` : ''}
           </div>
           <button onclick="removeCostCode('${c.id}')" class="text-red-400 font-bold px-2">✕</button>
         </div>`
-      ).join('') || `<p class="text-xs text-slate-500">No cost codes added yet.</p>`;
+      ).join('') || `<p class="text-xs text-slate-500 py-2">No cost codes linked to ${selectedJobObj ? selectedJobObj.name : 'this job'}.</p>`);
     }
 
     function exportReconciledCsv() {
@@ -2919,7 +3303,7 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
 
         const card = displayLast4 ? state.cards.find(c => c.last_four === displayLast4) : null;
         const emp = card ? state.employees.find(e => e.id === card.assigned_employee_id) : null;
-        const job = state.jobs.find(j => j.id === l.job_id);
+        const job = findJobAnywhere(l.job_id);
         const cc = state.costCodes.find(c => c.id === l.cost_code_id);
 
         const sageJobNum = job ? (job.sage_job_number || (job.name.match(/^([0-9]{2,4}[\-][0-9A-Za-z]+)/)?.[1] || '')) : '';
