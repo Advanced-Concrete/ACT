@@ -3158,16 +3158,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         bar.innerHTML = `
           <div class="flex flex-wrap items-center justify-between gap-1.5">
             <div id="adminJobsFilterPills" class="flex flex-wrap items-center gap-1"></div>
-            ${currentRole === 'admin' ? `
-              <div class="flex items-center gap-1">
-                <button type="button" onclick="bulkSetJobsActiveStatus(false, true)" title="Set all currently shown jobs to Inactive" class="px-2 py-1 rounded-lg bg-amber-950/70 hover:bg-amber-900/80 text-amber-300 border border-amber-500/30 font-bold text-[10px]">
-                  Deactivate Shown
-                </button>
-                <button type="button" onclick="bulkSetJobsActiveStatus(true, true)" title="Set all currently shown jobs to Active" class="px-2 py-1 rounded-lg bg-emerald-950/70 hover:bg-emerald-900/80 text-emerald-300 border border-emerald-500/30 font-bold text-[10px]">
-                  Activate Shown
-                </button>
-              </div>
-            ` : ''}
           </div>
           <input
             type="text"
@@ -3180,7 +3170,6 @@ Rules: Never use store numbers, zip codes, or invoice numbers as last_four. Read
         jobsListEl.parentNode.insertBefore(bar, jobsListEl);
       }
     }
-
     function renderAdminJobsListOnly() {
       const jobsListEl = document.getElementById('adminJobsList');
       if (!jobsListEl) return;
