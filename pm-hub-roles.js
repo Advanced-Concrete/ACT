@@ -135,7 +135,7 @@
       if (supabaseClient && isOnline) {
         try {
           const [jobsRes, empRes, timeRes, metaRes] = await Promise.all([
-            supabaseClient.from('jobs').select('*').eq('active', true).order('name'),
+            supabaseClient.from('jobs').select('*').eq('active', true).order('name').limit(5000),
             supabaseClient.from('employees').select('*').order('full_name'),
             supabaseClient.from('job_time_entries').select('*').order('work_date', { ascending: false }),
             supabaseClient.from('app_settings').select('ocr_api_key').eq('id', 'roles_pm_meta').maybeSingle()
@@ -279,6 +279,27 @@
       if (typeof renderCrewView === 'function') renderCrewView();
     };
 
+    // Hide "+ New Job & Assign PM" and "Edit Job PMs / Emails" buttons for non-Admins
+    function syncPmHubAdminControls() {
+      const isAdmin = getActiveUserEffectiveRole() === 'admin';
+      const pmSection = document.getElementById('viewPmPortal');
+      if (!pmSection) return;
+      pmSection.querySelectorAll('button').forEach(btn => {
+        const oc = btn.getAttribute('onclick') || '';
+        const txt = (btn.textContent || '').trim();
+        if (
+          oc.includes('openNewJobWithPmModal') ||
+          oc.includes('openAssignPmToExistingJobsModal') ||
+          oc.includes('interceptAddJobWithPmPrompt') ||
+          txt.includes('New Job & Assign PM') ||
+          txt.includes('Edit Job PMs')
+        ) {
+          btn.classList.toggle('hidden', !isAdmin);
+          btn.style.display = isAdmin ? '' : 'none';
+        }
+      });
+    }
+
     function refreshRoleUiVisibility() {
       ensureMenuButtonsExist();
       const effRole = getActiveUserEffectiveRole();
@@ -293,6 +314,8 @@
       if (isAdmin && typeof currentRole !== 'undefined' && currentRole === 'crew') {
         currentRole = 'admin';
       }
+
+      syncPmHubAdminControls();
 
       // CRITICAL FIX: Ensure the Side Menu's upper scrollable container & FEATURES list are NEVER hidden!
       const drawer = document.getElementById('sideMenuDrawer');
@@ -551,16 +574,25 @@
 
     function injectRoleButtonIntoPmHeader() {
       const pmSection = document.getElementById('viewPmPortal');
-      if (!pmSection || document.getElementById('btnOpenRolesModalInHub')) return;
-      const btnRow = pmSection.querySelector('.flex.flex-wrap.items-center.gap-2');
-      if (btnRow) {
-        const btn = document.createElement('button');
-        btn.id = 'btnOpenRolesModalInHub';
-        btn.setAttribute('onclick', 'openUserRolesManagerModal()');
-        btn.className = 'px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 font-bold text-xs';
-        btn.textContent = '👥 User Levels & Roles';
-        btnRow.appendChild(btn);
+      if (!pmSection) return;
+      const isAdmin = getActiveUserEffectiveRole() === 'admin';
+      let btn = document.getElementById('btnOpenRolesModalInHub');
+      if (!btn) {
+        const btnRow = pmSection.querySelector('.flex.flex-wrap.items-center.gap-2');
+        if (btnRow) {
+          btn = document.createElement('button');
+          btn.id = 'btnOpenRolesModalInHub';
+          btn.setAttribute('onclick', 'openUserRolesManagerModal()');
+          btn.className = 'px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 font-bold text-xs';
+          btn.textContent = '👥 User Levels & Roles';
+          btnRow.appendChild(btn);
+        }
       }
+      if (btn) {
+        btn.classList.toggle('hidden', !isAdmin);
+        btn.style.display = isAdmin ? '' : 'none';
+      }
+      syncPmHubAdminControls();
     }
 
     // =========================================================================
@@ -655,7 +687,7 @@
     };
 
     // =========================================================================
-    // 5. JOB CREATION & PM ASSIGNMENT
+    // 5. JOB CREATION & PM ASSIGNMENT (STRICTLY ADMINS ONLY)
     // =========================================================================
     function getAppointedPmList() {
       const allEmps = state.employees || [];
@@ -676,7 +708,10 @@
     }
 
     function interceptAddJobWithPmPrompt() {
-      const nameInp = document.getElementById('newJobInput') || document.getElementById('jobNameInput');
+      if (getActiveUserEffectiveRole() !== 'admin') {
+        return showSimpleToast('Only Administrators can create jobs.', true);
+      }
+      const nameInp = document.getElementById('newJobNameInput') || document.getElementById('newJobInput') || document.getElementById('jobNameInput');
       const prefilledJobName = nameInp ? nameInp.value.trim() : '';
       openNewJobWithPmModal(prefilledJobName);
     }
@@ -700,6 +735,9 @@
     };
 
     window.openNewJobWithPmModal = function openNewJobWithPmModal(prefilledJobName = '') {
+      if (getActiveUserEffectiveRole() !== 'admin') {
+        return showSimpleToast('Only Administrators can create jobs.', true);
+      }
       const pmCandidates = getAppointedPmList();
       const otherEmps = (state.employees || []).filter(e => !pmCandidates.includes(e));
 
@@ -714,14 +752,14 @@
       document.getElementById('modalBody').innerHTML = `
         <div class="space-y-3.5 text-xs">
           <div>
-            <label class="block font-bold text-slate-300 mb-1">Job Number & Name <span class="text-emerald-400">*</span></label>
-            <input type="text" id="modalNewJobName" value="${prefilledJobName.replace(/"/g, '&quot;')}" placeholder="e.g. 26-104 Bingham Elementary" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white font-semibold" />
+            <label class="block font-bold text-slate-300 mb-1">Job Description / Name <span class="text-emerald-400">*</span></label>
+            <input type="text" id="modalNewJobName" value="${prefilledJobName.replace(/"/g, '&quot;')}" placeholder="e.g. Bingham Elementary" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white font-semibold" />
           </div>
 
           <div class="p-3 rounded-xl bg-slate-900/90 border border-indigo-500/40 space-y-3">
             <div class="flex items-center justify-between">
               <span class="text-[11px] font-bold uppercase tracking-wider text-indigo-400">Designated Project Manager (Required)</span>
-              ${getActiveUserEffectiveRole() === 'admin' ? `<button type="button" onclick="openUserRolesManagerModal()" class="text-[11px] text-amber-300 underline">Manage PM Roles</button>` : ''}
+              <button type="button" onclick="openUserRolesManagerModal()" class="text-[11px] text-amber-300 underline">Manage PM Roles</button>
             </div>
             <div>
               <label class="block text-slate-400 mb-1">Select Project Manager</label>
@@ -753,13 +791,20 @@
     }
 
     async function saveNewJobWithPm() {
-      const name = document.getElementById('modalNewJobName')?.value.trim();
+      if (getActiveUserEffectiveRole() !== 'admin') {
+        return showSimpleToast('Only Administrators can create jobs.', true);
+      }
+      const rawName = document.getElementById('modalNewJobName')?.value.trim();
       const pmName = document.getElementById('modalNewJobPmName')?.value.trim();
       const pmEmail = document.getElementById('modalNewJobPmEmail')?.value.trim();
 
-      if (!name) return showSimpleToast('Enter a Job Name', true);
+      if (!rawName) return showSimpleToast('Enter a Job Name', true);
       if (!pmName) return showSimpleToast('Enter a Project Manager Name', true);
       if (!pmEmail) return showSimpleToast('Enter the Project Manager Email', true);
+
+      const numMatch = rawName.match(/^([0-9]{2,4}[\-][0-9A-Za-z]+)\s+(.+)$/);
+      const sageJobNumber = numMatch ? numMatch[1].trim() : null;
+      const cleanJobName = numMatch ? numMatch[2].trim() : rawName;
 
       const matchedEmp = (state.employees || []).find(e => (e.full_name || '').toLowerCase() === pmName.toLowerCase());
       if (matchedEmp) {
@@ -769,17 +814,20 @@
 
       const newJob = {
         id: 'job_' + Date.now(),
-        name,
+        sage_job_number: sageJobNumber,
+        name: cleanJobName,
         active: true,
         pm_employee_id: matchedEmp ? matchedEmp.id : null,
         pm_name: pmName,
         pm_email: pmEmail
       };
 
+      if (!Array.isArray(state.allJobs)) state.allJobs = [...(state.jobs || [])];
+      state.allJobs.push(newJob);
       state.jobs.push(newJob);
       state.jobs.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
-      const oldInp = document.getElementById('newJobInput') || document.getElementById('jobNameInput');
+      const oldInp = document.getElementById('newJobNameInput') || document.getElementById('newJobInput') || document.getElementById('jobNameInput');
       if (oldInp) oldInp.value = '';
 
       await persistRolesAndPmMeta();
@@ -792,7 +840,7 @@
       if (!document.getElementById('viewPmPortal')?.classList.contains('hidden')) {
         initPmPortalView();
       }
-      showSimpleToast(`Job "${name}" Saved (PM: ${pmName})`, false);
+      showSimpleToast(`Job "${cleanJobName}" Saved (PM: ${pmName})`, false);
     }
 
     function checkUnassignedJobsForPmPrompt() {
@@ -803,6 +851,9 @@
     }
 
     window.openAssignPmToExistingJobsModal = function openAssignPmToExistingJobsModal(onlyUnassignedNotice = false) {
+      if (getActiveUserEffectiveRole() !== 'admin') {
+        return showSimpleToast('Only Administrators can edit jobs.', true);
+      }
       const jobs = (state.jobs || []).filter(j => j.active !== false);
       const pmCandidates = getAppointedPmList();
       const empDatalist = `<datalist id="pmRosterList">${pmCandidates.map(e => `<option value="${e.full_name}">`).join('')}</datalist>`;
@@ -846,6 +897,9 @@
     }
 
     async function saveAllJobPmAssignments() {
+      if (getActiveUserEffectiveRole() !== 'admin') {
+        return showSimpleToast('Only Administrators can edit jobs.', true);
+      }
       const updatedJobs = [];
       (state.jobs || []).forEach(j => {
         const nameEl = document.getElementById(`editJobPmName_${j.id}`);
@@ -904,7 +958,10 @@
       } else if (matchedJob && !matchedJob.pm_email) {
         if (badgeEl) {
           badgeEl.className = 'text-[11px] font-semibold text-amber-400 mt-1';
-          badgeEl.innerHTML = `⚠ No PM email assigned to "${matchedJob.name}" yet. <button type="button" onclick="openAssignPmToExistingJobsModal()" class="underline ml-1">Assign PM</button>`;
+          const assignBtn = getActiveUserEffectiveRole() === 'admin'
+            ? ` <button type="button" onclick="openAssignPmToExistingJobsModal()" class="underline ml-1">Assign PM</button>`
+            : '';
+          badgeEl.innerHTML = `⚠ No PM email assigned to "${matchedJob.name}" yet.${assignBtn}`;
         }
       } else if (badgeEl) {
         badgeEl.textContent = '';
@@ -949,7 +1006,11 @@
       const loggedInEmp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
 
       const roleHubBtn = document.getElementById('btnOpenRolesModalInHub');
-      if (roleHubBtn) roleHubBtn.classList.toggle('hidden', effRole !== 'admin');
+      if (roleHubBtn) {
+        roleHubBtn.classList.toggle('hidden', effRole !== 'admin');
+        roleHubBtn.style.display = effRole === 'admin' ? '' : 'none';
+      }
+      syncPmHubAdminControls();
 
       const pmNamesSet = new Set();
       (state.jobs || []).forEach(j => {
