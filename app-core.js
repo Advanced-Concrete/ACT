@@ -9,6 +9,24 @@
       window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
     }
 
+    // Automatically attach x-fieldops-code to every Supabase client created by any module
+    if (window.supabase && typeof window.supabase.createClient === 'function' && !window.supabase._wrappedWithShopCode) {
+      const _origCreateClient = window.supabase.createClient.bind(window.supabase);
+      window.supabase.createClient = function (url, key, options = {}) {
+        return _origCreateClient(url, key, {
+          ...options,
+          global: {
+            ...(options.global || {}),
+            headers: {
+              ...((options.global && options.global.headers) || {}),
+              'x-fieldops-code': '@dvc0ncr3te!'
+            }
+          }
+        });
+      };
+      window.supabase._wrappedWithShopCode = true;
+    }
+
     try {
       const cachedKey = localStorage.getItem('fieldops_canvas_key');
       if (cachedKey && cachedKey.startsWith('AQAb8')) {
@@ -487,7 +505,13 @@
 
     if (url && key && window.supabase) {
       try {
-        supabaseClient = window.supabase.createClient(url, key);
+        supabaseClient = window.supabase.createClient(url, key, {
+          global: {
+            headers: {
+              'x-fieldops-code': '@dvc0ncr3te!'
+            }
+          }
+        });
         return true;
       } catch (e) {
         supabaseClient = null;
