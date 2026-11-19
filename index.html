@@ -877,7 +877,7 @@
         </div>
       </div>
 
-      <!-- PAGE 11: ADMIN DROPBOX BLUEPRINTS SETUP (SERVER PROXY) -->
+      <!-- PAGE 11: ADMIN DROPBOX BLUEPRINTS SETUP (SERVER PROXY + AUTO-SCAN CONTROLS) -->
       <div id="adminPage_dropbox_setup" class="hidden max-w-xl mx-auto space-y-4">
         <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 space-y-4">
           <div class="flex items-start justify-between gap-2">
@@ -944,6 +944,19 @@
                 Authorize via Redirect URI
               </button>
             </div>
+          </div>
+
+          <!-- Admin-Only Callout Auto-Scan Setting -->
+          <div class="p-3.5 rounded-xl bg-slate-900/90 border border-indigo-500/40 flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <div class="text-xs font-bold text-indigo-300">Auto-Scan Callout Links on First Open (Admin Only)</div>
+              <p class="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                When an Admin opens an unscanned drawing page for the first time, automatically scan callouts (PDF text + Gemini OCR) and link them to matching PDFs in the same folder. Runs once per page across all devices.
+              </p>
+            </div>
+            <label class="inline-flex items-center cursor-pointer shrink-0">
+              <input id="bpAdminAutoScanToggle" type="checkbox" checked class="w-4 h-4 accent-indigo-500 rounded cursor-pointer" />
+            </label>
           </div>
 
           <div class="flex items-center justify-between gap-2 pt-2 border-t border-slate-700">
@@ -1022,7 +1035,7 @@
         </div>
       </div>
 
-      <!-- Right: Zoom, Add/Edit Callout Link (Role-Guarded), Offline Toggle, Dropbox Browser -->
+      <!-- Right: Zoom, Admin Re-Scan, Add/Edit Callout Link (Role-Guarded), Offline Toggle, Dropbox Browser -->
       <div class="flex items-center justify-between lg:justify-end gap-1.5 w-full lg:w-auto overflow-x-auto">
         <div class="flex items-center bg-slate-800 border border-slate-700 rounded-lg p-0.5 shrink-0">
           <button id="bpZoomOutBtn" type="button" title="Zoom Out" class="p-1.5 rounded hover:bg-slate-700 text-slate-200 transition">
@@ -1035,6 +1048,18 @@
           <div class="h-4 w-px bg-slate-700 mx-0.5"></div>
           <button id="bpZoomFitBtn" type="button" title="Fit Entire Sheet" class="px-2 py-1 rounded hover:bg-slate-700 text-[11px] font-semibold text-slate-200 transition">Fit</button>
         </div>
+
+        <button id="bpRescanPageBtn" type="button" title="Admin Only: Scan or re-scan this drawing page for callout links to other PDFs in the same folder"
+          class="hidden flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-700 hover:bg-indigo-600 text-white border border-indigo-500/60 transition shrink-0 disabled:opacity-50">
+          <svg class="w-3.5 h-3.5 text-indigo-200 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 7V5a2 2 0 0 1 2-2h2"></path>
+            <path d="M17 3h2a2 2 0 0 1 2 2v2"></path>
+            <path d="M21 17v2a2 2 0 0 1-2 2h-2"></path>
+            <path d="M7 21H5a2 2 0 0 1-2-2v-2"></path>
+            <line x1="7" y1="12" x2="17" y2="12"></line>
+          </svg>
+          <span id="bpRescanPageLabel">Re-Scan Links</span>
+        </button>
 
         <button id="bpToggleAddLinkBtn" type="button" title="Draw a new callout link, or tap an existing link to edit or delete it"
           class="hidden flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 transition shrink-0">
@@ -1257,6 +1282,6 @@
   <script src="pm-hub-roles.js?v=4"></script>
   <script src="email-webhook.js?v=4"></script>
   <script src="branding.js?v=4"></script>
-  <script src="blueprints.js?v=5"></script>
+  <script src="blueprints.js?v=6"></script>
 </body>
 </html>
