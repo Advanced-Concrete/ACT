@@ -15,7 +15,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
   <script src="https://cdn.jsdelivr.net/npm/pdf-lib@1.17.1/dist/pdf-lib.min.js"></script>
-  <link rel="stylesheet" href="styles.css?v=4" />
+  <link rel="stylesheet" href="styles.css?v=5" />
 </head>
 <body class="min-h-screen selection:bg-emerald-500 selection:text-white">
 
@@ -83,7 +83,7 @@
         <button onclick="closeSideMenu()" class="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white text-xs font-bold">✕</button>
       </div>
 
-      <!-- Features / Modules List (Non-crew tabs hidden by default so Crew Members only see Receipts) -->
+      <!-- Features / Modules List (Non-crew tabs hidden by default so Crew Members only see Receipts & Blueprints) -->
       <div class="space-y-1">
         <p class="px-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Features</p>
         <button id="menuFeatReceipts" onclick="selectMenuFeature('receipts')" class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 transition">
@@ -94,14 +94,13 @@
           <span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">Active</span>
         </button>
 
-                <button id="menuFeatBlueprints" onclick="selectMenuFeature('blueprints')" class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition">
+        <button id="menuFeatBlueprints" onclick="selectMenuFeature('blueprints')" class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition">
           <span class="flex items-center gap-2.5">
             <svg class="w-4 h-4 text-sky-400" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7"/></svg>
             Blueprints
           </span>
           <span class="px-1.5 py-0.5 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 text-[10px] font-mono">PDF</span>
         </button>
-
 
         <button id="menuFeatMyPersonalCard" onclick="openMyPersonalCardView()" class="hidden w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition">
           <span class="flex items-center gap-2.5">
@@ -398,6 +397,7 @@
         </div>
       </div>
     </section>
+
     <!-- PROJECT MANAGER PORTAL (DOCUMENTS, RECEIPTS, HOURS LOGGED & PAYROLL) -->
     <section id="viewPmPortal" class="hidden space-y-4">
       <!-- Top Header: Select Project Manager & Job Filter -->
@@ -460,6 +460,7 @@
       <!-- Tab Content Container -->
       <div id="pmPortalTabBody" class="bg-slate-800 border border-slate-700 rounded-2xl p-4"></div>
     </section>
+
     <!-- CREW VIEW: SINGLE OR MULTI-RECEIPT CAPTURE & BLIND OCR -->
     <section id="viewCrew" class="max-w-md mx-auto space-y-4">
       <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 flex items-center justify-between">
@@ -876,7 +877,7 @@
         </div>
       </div>
 
-            <!-- PAGE 11: ADMIN DROPBOX BLUEPRINTS SETUP (SERVER PROXY) -->
+      <!-- PAGE 11: ADMIN DROPBOX BLUEPRINTS SETUP (SERVER PROXY) -->
       <div id="adminPage_dropbox_setup" class="hidden max-w-xl mx-auto space-y-4">
         <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 space-y-4">
           <div class="flex items-start justify-between gap-2">
@@ -993,6 +994,262 @@
     </div>
   </div>
 
+  <!-- =================================================================== -->
+  <!-- FULL-BLEED BLUEPRINTS VIEWER (BELOW ACT STICKY HEADER)              -->
+  <!-- =================================================================== -->
+  <section id="viewBlueprints" class="hidden fixed inset-x-0 bottom-0 z-30 flex flex-col bg-slate-200 text-slate-900">
+    <!-- Blueprints Action Toolbar -->
+    <div class="bg-slate-900 text-white border-b border-slate-800 px-2.5 py-1.5 sm:px-3 sm:py-2 flex flex-wrap lg:flex-nowrap items-center justify-between gap-1.5 sm:gap-2 shrink-0 shadow-md">
+      <!-- Left: Active Drawing Pill + Multi-Page Steppers -->
+      <div class="flex items-center gap-1.5 sm:gap-2 min-w-0 flex-1 lg:flex-initial">
+        <button id="bpActiveSheetPillBtn" type="button" title="Open Dropbox Browser to Switch Drawing"
+          class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-slate-800/95 hover:bg-slate-700 border border-slate-700 text-left min-w-0 flex-1 lg:max-w-sm transition">
+          <span id="bpActiveSetSourceTag" class="text-[10px] font-mono uppercase px-1.5 py-0.2 rounded bg-sky-500/20 text-sky-300 border border-sky-500/30 shrink-0">PDF</span>
+          <span id="bpActiveSheetPillText" class="text-xs font-mono font-bold text-amber-300 truncate">Select Blueprint...</span>
+          <svg class="w-3.5 h-3.5 text-slate-400 shrink-0 ml-auto" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <polyline points="6 9 12 15 18 9"></polyline>
+          </svg>
+        </button>
+
+        <div id="bpMultiPageStepperWrap" class="hidden items-center bg-slate-800 border border-slate-700 rounded-lg p-0.5 shrink-0">
+          <button id="bpPrevPageBtn" type="button" title="Previous Page" class="p-1 rounded hover:bg-slate-700 text-slate-300 transition">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="15 18 9 12 15 6"></polyline></svg>
+          </button>
+          <span id="bpMultiPageIndicatorText" class="font-mono text-[10px] font-bold text-slate-200 px-1.5">1/1</span>
+          <button id="bpNextPageBtn" type="button" title="Next Page" class="p-1 rounded hover:bg-slate-700 text-slate-300 transition">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><polyline points="9 18 15 12 9 6"></polyline></svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Right: Zoom, Add/Edit Callout Link (Role-Guarded), Offline Toggle, Dropbox Browser -->
+      <div class="flex items-center justify-between lg:justify-end gap-1.5 w-full lg:w-auto overflow-x-auto">
+        <div class="flex items-center bg-slate-800 border border-slate-700 rounded-lg p-0.5 shrink-0">
+          <button id="bpZoomOutBtn" type="button" title="Zoom Out" class="p-1.5 rounded hover:bg-slate-700 text-slate-200 transition">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          </button>
+          <span id="bpZoomPercentLabel" class="font-mono text-[11px] font-bold text-sky-300 px-2 py-1 min-w-[50px] text-center">100%</span>
+          <button id="bpZoomInBtn" type="button" title="Zoom In" class="p-1.5 rounded hover:bg-slate-700 text-slate-200 transition">
+            <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          </button>
+          <div class="h-4 w-px bg-slate-700 mx-0.5"></div>
+          <button id="bpZoomFitBtn" type="button" title="Fit Entire Sheet" class="px-2 py-1 rounded hover:bg-slate-700 text-[11px] font-semibold text-slate-200 transition">Fit</button>
+        </div>
+
+        <button id="bpToggleAddLinkBtn" type="button" title="Draw a new callout link, or tap an existing link to edit or delete it"
+          class="hidden flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 transition shrink-0">
+          <svg class="w-3.5 h-3.5 text-amber-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+            <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+          </svg>
+          <span>Add or Edit Callout Link</span>
+        </button>
+
+        <button id="bpSaveOfflineBtn" type="button" title="Make or Remove Active Blueprint Available Offline on This Device"
+          class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 transition shrink-0">
+          <svg class="w-3.5 h-3.5 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          <span id="bpSaveOfflineLabel">Available Offline</span>
+          <span id="bpOfflineBadgePill" class="hidden text-[10px] font-mono uppercase px-1.5 py-0.2 rounded bg-slate-700 text-slate-300 border border-slate-600">OFF</span>
+        </button>
+
+        <button id="bpOpenDropboxModalBtn" type="button" title="Browse Dropbox Blueprints & Offline Library"
+          class="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-sky-600 hover:bg-sky-500 text-white shadow-xs transition shrink-0">
+          <span id="bpStatusDot" class="w-2 h-2 rounded-full bg-amber-300 shrink-0"></span>
+          <svg class="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"></path>
+          </svg>
+          <span>Dropbox Browser</span>
+        </button>
+      </div>
+    </div>
+
+    <!-- Interactive Blueprint Canvas Viewport -->
+    <div id="bpCanvasViewport" class="flex-1 min-h-0 relative overflow-hidden bp-grid-bg cursor-grab">
+      <button id="bpBackHistoryPillBtn" type="button"
+        class="hidden absolute top-3 left-3 z-20 items-center gap-2 px-3.5 py-2 rounded-full bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold shadow-2xl border-2 border-slate-900 transition">
+        <svg class="w-4 h-4 text-slate-950 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6">
+          <line x1="19" y1="12" x2="5" y2="12"></line>
+          <polyline points="12 19 5 12 12 5"></polyline>
+        </svg>
+        <span id="bpBackHistoryPillText">← Back to Sheet</span>
+      </button>
+
+      <div id="bpAddLinkBanner"
+        class="hidden absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-3.5 py-2 rounded-xl bg-amber-500 text-slate-950 text-xs font-bold shadow-xl max-w-[92vw]">
+        <span class="truncate">Drag or tap to add a link, or tap an existing link to edit or delete it</span>
+        <button id="bpCancelAddLinkBannerBtn" type="button" class="ml-1 px-2 py-0.5 rounded bg-slate-900 text-white text-[10px] font-mono shrink-0">Done</button>
+      </div>
+
+      <div id="bpPdfBusyIndicator"
+        class="hidden absolute bottom-3 left-3 z-20 flex items-center gap-2 px-3.5 py-2 rounded-xl bg-slate-900/95 text-white text-xs font-semibold shadow-xl border border-slate-700">
+        <div class="w-3.5 h-3.5 border-2 border-sky-400 border-t-transparent rounded-full animate-spin shrink-0"></div>
+        <span id="bpPdfBusyText">Loading PDF sheet...</span>
+      </div>
+
+      <div id="bpDrawingStage" class="hidden absolute top-0 left-0 origin-top-left bg-white shadow-2xl ring-1 ring-slate-900/20">
+        <canvas id="bpPdfBaseCanvas" class="block pointer-events-none"></canvas>
+        <canvas id="bpPdfDetailCanvas" class="absolute top-0 left-0 block pointer-events-none hidden"></canvas>
+        <div id="bpCalloutOverlayLayer" class="absolute inset-0 overflow-hidden pointer-events-none"></div>
+        <div id="bpCalloutRubberband" class="bp-callout-rubberband hidden"></div>
+      </div>
+
+      <div id="bpEmptyViewportState" class="absolute inset-0 flex items-center justify-center p-4 pointer-events-none">
+        <div class="pointer-events-auto bg-slate-900/95 text-white border border-slate-700 rounded-2xl p-5 max-w-sm w-full text-center shadow-2xl space-y-3">
+          <div class="text-sm font-bold">No Drawing Open</div>
+          <p class="text-xs text-slate-300">Open a blueprint from Dropbox or your offline device library to begin viewing sheets.</p>
+          <button id="bpEmptyOpenDropboxBtn" type="button"
+            class="w-full py-2 px-4 rounded-xl bg-sky-600 hover:bg-sky-500 text-white text-xs font-bold transition">
+            Open Dropbox Browser
+          </button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- BLUEPRINTS MODAL 1: CREATE / EDIT CALLOUT LINK (ADMIN / PM / SUPERVISOR) -->
+  <div id="bpCalloutModal" class="hidden fixed inset-0 z-[65] bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-2.5 sm:p-4 text-slate-900">
+    <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-2xl overflow-hidden flex flex-col max-h-[92vh]">
+      <div class="px-4 py-3 bg-slate-900 text-white flex items-center justify-between shrink-0">
+        <div class="min-w-0">
+          <h3 id="bpCalloutModalTitle" class="font-bold text-sm truncate">Create Callout Link</h3>
+          <p id="bpCalloutModalSourceSubtitle" class="text-[11px] text-slate-400 font-mono truncate">Source Drawing</p>
+        </div>
+        <button id="bpCloseCalloutModalBtn" type="button" class="text-slate-400 hover:text-white p-1 rounded-lg">✕</button>
+      </div>
+
+      <div class="p-4 grid grid-cols-1 md:grid-cols-12 gap-4 text-xs overflow-y-auto">
+        <div class="md:col-span-7 space-y-3 flex flex-col min-h-0">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <div>
+              <label for="bpCalloutLabelInput" class="block font-bold text-slate-800 mb-1">
+                Callout Label <span class="font-normal text-slate-500">(Auto-matches)</span>
+              </label>
+              <input id="bpCalloutLabelInput" type="text" placeholder="e.g., 3/S2.0"
+                class="w-full px-3 py-2 text-xs font-mono font-bold border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500" />
+            </div>
+            <div>
+              <label for="bpCalloutDetailTitleInput" class="block font-bold text-slate-800 mb-1">Detail Description</label>
+              <input id="bpCalloutDetailTitleInput" type="text" placeholder="e.g., Wall Footing Section"
+                class="w-full px-3 py-2 text-xs border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500" />
+            </div>
+          </div>
+
+          <div id="bpSmartMatchBanner" class="hidden px-3 py-1.5 rounded-xl bg-emerald-50 border border-emerald-300 text-emerald-900 text-[11px] flex items-center justify-between gap-2">
+            <span id="bpSmartMatchBannerText" class="font-semibold truncate">Auto-matched target</span>
+            <span class="font-mono text-[10px] uppercase px-1.5 py-0.2 rounded bg-emerald-200 text-emerald-950 font-bold shrink-0">Matched</span>
+          </div>
+
+          <div class="flex-1 flex flex-col min-h-0">
+            <div class="flex items-center justify-between mb-1 gap-2">
+              <label class="font-bold text-slate-800">Target Drawing PDF</label>
+              <div class="flex items-center gap-1.5 shrink-0">
+                <button id="bpCalloutFolderUpBtn" type="button" class="hidden px-2 py-0.5 rounded-lg bg-sky-100 hover:bg-sky-200 text-sky-900 text-[11px] font-bold">↑ Up Folder</button>
+                <button id="bpCalloutFolderRootBtn" type="button" class="hidden px-2 py-0.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-semibold">Other Folder</button>
+              </div>
+            </div>
+
+            <div class="px-2.5 py-1.5 bg-slate-100 border-t border-x border-slate-300 rounded-t-xl flex items-center justify-between gap-2">
+              <div class="flex items-center gap-1.5 min-w-0">
+                <span class="text-amber-600 text-xs shrink-0">📁</span>
+                <span id="bpCalloutFolderPathLabel" class="font-mono text-[11px] font-semibold text-slate-700 truncate">/Current Jobs</span>
+              </div>
+              <button id="bpCalloutFolderResetToCurrentBtn" type="button" class="hidden text-[10px] font-bold text-sky-700 hover:text-sky-900 shrink-0 underline">Current File's Folder</button>
+            </div>
+
+            <input id="bpTargetSearchInput" type="text" placeholder="Filter PDFs or subfolders..."
+              class="w-full px-3 py-1.5 text-xs bg-slate-50 border border-slate-300 focus:outline-none focus:ring-2 focus:ring-sky-500" />
+
+            <div id="bpCalloutTargetListContainer"
+              class="max-h-56 overflow-y-auto border-x border-b border-slate-300 rounded-b-xl divide-y divide-slate-100 bg-white"></div>
+          </div>
+        </div>
+
+        <div class="md:col-span-5 flex flex-col space-y-3">
+          <div class="grid grid-cols-2 gap-2.5">
+            <div>
+              <label for="bpCalloutTargetPageInput" class="block font-bold text-slate-800 mb-1">Target Page #</label>
+              <input id="bpCalloutTargetPageInput" type="number" min="1" max="999" value="1"
+                class="w-full px-3 py-1.5 text-xs font-mono font-bold border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-sky-500" />
+            </div>
+            <div>
+              <label class="block font-bold text-slate-800 mb-1">Hotspot Color</label>
+              <div class="grid grid-cols-3 gap-1">
+                <button type="button" data-badge-color="blue" class="bp-callout-color-choice py-1.5 px-1 rounded-lg border-2 border-slate-900 bg-slate-900 text-white font-bold text-[10px]">Blue</button>
+                <button type="button" data-badge-color="amber" class="bp-callout-color-choice py-1.5 px-1 rounded-lg border border-slate-300 bg-white text-slate-700 font-bold text-[10px]">Amber</button>
+                <button type="button" data-badge-color="emerald" class="bp-callout-color-choice py-1.5 px-1 rounded-lg border border-slate-300 bg-white text-slate-700 font-bold text-[10px]">Green</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="p-3 rounded-xl bg-slate-100 border border-slate-300">
+            <div class="text-[10px] font-bold uppercase text-slate-500">Selected Target Destination</div>
+            <div id="bpSelectedTargetSummaryText" class="text-xs font-mono font-bold text-slate-900 truncate mt-1">None selected</div>
+            <div id="bpSelectedTargetFolderText" class="text-[10px] font-mono text-slate-500 truncate mt-0.5"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="px-4 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-2 shrink-0">
+        <button id="bpDeleteCalloutBtn" type="button" class="hidden px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-100 hover:bg-rose-200 text-rose-800 border border-rose-300 transition">Delete Link</button>
+        <div class="flex items-center gap-2 ml-auto">
+          <button id="bpCancelCalloutModalBtn" type="button" class="px-3 py-1.5 rounded-xl text-xs font-semibold text-slate-700 hover:bg-slate-200 transition">Cancel</button>
+          <button id="bpSaveCalloutModalBtn" type="button" class="px-4 py-1.5 rounded-xl text-xs font-bold bg-sky-600 hover:bg-sky-500 text-white shadow-xs transition">Save Callout Link</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- BLUEPRINTS MODAL 2: DROPBOX BROWSER & OFFLINE LIBRARY -->
+  <div id="bpDropboxModal" class="hidden fixed inset-0 z-[65] bg-slate-950/75 backdrop-blur-xs flex items-center justify-center p-2.5 sm:p-4 text-slate-900">
+    <div class="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-3xl overflow-hidden flex flex-col max-h-[92vh]">
+      <div class="px-4 py-3 bg-slate-900 text-white flex items-center justify-between gap-2 shrink-0">
+        <div class="flex items-center gap-2 min-w-0">
+          <span id="bpModalDbxStatusDot" class="w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0"></span>
+          <div class="min-w-0">
+            <h3 class="font-bold text-sm truncate">Dropbox Blueprints &amp; Project Folders</h3>
+            <p class="text-[11px] text-slate-400 truncate" id="bpModalDbxAccountSubtitle">Checking connection...</p>
+          </div>
+        </div>
+
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button id="bpOpenLocalPdfPickerBtn" type="button"
+            class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-amber-300 border border-slate-700 transition">
+            Local PDF(s)
+          </button>
+          <input id="bpLocalPdfInput" type="file" accept="application/pdf" multiple class="hidden" />
+
+          <button id="bpOpenAdminSetupShortcutBtn" type="button"
+            class="hidden px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-sky-300 border border-slate-700 transition">
+            Admin Setup
+          </button>
+
+          <button id="bpCloseDropboxModalBtn" type="button" class="p-1.5 rounded-lg text-slate-400 hover:text-white">✕</button>
+        </div>
+      </div>
+
+      <div class="px-4 pt-2.5 bg-slate-100 border-b border-slate-200 flex items-center gap-1.5 shrink-0">
+        <button id="bpModalTabDropboxBtn" type="button"
+          class="px-3 py-1.5 rounded-t-lg text-xs font-bold bg-white text-slate-900 border-t border-x border-slate-200">
+          Dropbox Browser
+        </button>
+        <button id="bpModalTabOfflineBtn" type="button"
+          class="px-3 py-1.5 rounded-t-lg text-xs font-semibold text-slate-600 hover:text-slate-900">
+          Offline Saved PDFs (<span id="bpModalOfflineCount">0</span>)
+        </button>
+      </div>
+
+      <div id="bpModalPanelDropbox" class="flex-1 flex flex-col min-h-0 overflow-hidden">
+        <div id="bpDbxBreadcrumbBar" class="px-3 py-2 bg-white border-b border-slate-200 flex items-center gap-1 text-xs font-semibold overflow-x-auto shrink-0"></div>
+        <div id="bpDbxEntriesContainer" class="flex-1 overflow-y-auto p-3 space-y-2 bg-slate-50"></div>
+      </div>
+
+      <div id="bpModalPanelOffline" class="hidden flex-1 overflow-y-auto p-3 space-y-2 bg-slate-50"></div>
+    </div>
+  </div>
 
   <!-- ACT Application Modules (Loaded in dependency order) -->
   <script src="app-core.js?v=4"></script>
@@ -1000,5 +1257,6 @@
   <script src="pm-hub-roles.js?v=4"></script>
   <script src="email-webhook.js?v=4"></script>
   <script src="branding.js?v=4"></script>
+  <script src="blueprints.js?v=5"></script>
 </body>
 </html>
