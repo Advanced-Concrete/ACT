@@ -1,10 +1,15 @@
-// ========================================================================= 
+// =========================================================================
 // ACT MASTER - BLUEPRINTS MODULE (blueprints.js)
 // Zero-conflict drop-in PDF blueprint & cross-sheet callout viewer
 // - All Dropbox calls route through Supabase Edge Function `dropbox-proxy`
 // - Shared callout overlays sync via `supabaseClient` (`blueprint_callout_links`)
+// - Admin-only first-open Auto-Scan & manual Re-Scan (PDF.js Vector + Gemini OCR)
+//   tracked cross-device in `blueprint_scanned_pages`
 // - Offline PDFs + overlay snapshots + linked target sheets cached in IndexedDB
-// - Role guards: Admin (setup + edit), PM/Supervisor (edit), Crew (view + offline)
+// - Role guards:
+//     Admin:      Dropbox setup, Auto-Scan/Re-Scan, Add/Edit/Delete links, View/Offline
+//     PM/Supv:    Add/Edit/Delete links, View/Offline
+//     Crew:       View/Offline only
 // =========================================================================
 (function () {
   'use strict';
@@ -15,8 +20,16 @@
   }
 
   const LINKS_TABLE = 'blueprint_callout_links';
+  const SCANNED_PAGES_TABLE = 'blueprint_scanned_pages';
   const PROXY_FN = 'dropbox-proxy';
   const DEFAULT_LOCKED_ROOT = '/Current Jobs';
+
+  // Non-sheet tokens to ignore during automatic sheet-number extraction
+  const IGNORED_SHEET_TOKENS = new Set([
+    'PDF', 'REV', 'REV1', 'REV2', 'REV3', 'REV4', 'ADD1', 'ADD2', 'RFI1', 'RFI2',
+    'ASI1', 'ASI2', 'DWG', 'CAD', 'BIM', 'NTS', 'TYP', 'SIM', 'OPP', 'REF', 'MAX',
+    'MIN', 'CL', 'EQ', 'TOC', 'TOS', 'BOF', 'TOF', 'FFL', 'FFE', 'NO', 'PG'
+  ]);
 
   // -----------------------------------------------------------------------
   // 1. SAFE ACT BRIDGES (Read top-level ACT globals safely without coupling)
@@ -46,11 +59,30 @@
     return getEffectiveRole() === 'admin';
   }
 
+  function isAutoScanEnabled() {
+    return SafeStorage.get('bp_admin_autoscan_enabled', 'true') !== 'false';
+  }
+
   function getAdminEmployeeId() {
     if (typeof activeCrewEmployeeId !== 'undefined' && activeCrewEmployeeId) {
       return activeCrewEmployeeId;
     }
     return isAdminUser() ? 'ADMIN' : '';
+  }
+
+  function getActiveUserDisplayName() {
+    try {
+      if (
+        typeof activeCrewEmployeeId !== 'undefined' &&
+        activeCrewEmployeeId &&
+        typeof state !== 'undefined' &&
+        Array.isArray(state.employees)
+      ) {
+        const emp = state.employees.find((e) => e.id === activeCrewEmployeeId);
+        if (emp?.full_name) return emp.full_name;
+      }
+    } catch {}
+    return isAdminUser() ? 'Administrator' : 'User';
   }
 
   function notify(msg, type = 'info') {
@@ -110,6 +142,18 @@
 
   function normalizeSheetToken(name) {
     return String(name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  }
+
+  /**
+   * Canonicalizes a sheet code for precise matching while preserving decimal points
+   * (e.g., "S-2.0" -> "S2.0", "A 101" -> "A101", "S2.00" -> "S2.00").
+   */
+  function canonicalSheetCode(raw) {
+    return String(raw || '')
+      .toUpperCase()
+      .replace(/[\s\-_]+/g, '')
+      .replace(/^\.+|\.+$/g, '')
+      .trim();
   }
 
   // -----------------------------------------------------------------------
@@ -276,6 +320,11 @@
     pdfProxies: new Map(),
     calloutLinks: [],
     historyStack: [],
+
+    // Auto-Scan tracking (Admin-only)
+    scannedPagesCache: new Set(),
+    inFlightScans: new Set(),
+    isScanningNow: false,
 
     stageW: 1500,
     stageH: 1000,
@@ -445,7 +494,7 @@
         bpState.dbxUpdatedAt = res?.updatedAt || null;
         updateConnectionBadges();
         return res;
-      } catch (err) {
+      } catch {
         updateConnectionBadges();
         return null;
       }
@@ -462,7 +511,6 @@
 
     async downloadFile(path) {
       const target = clampPath(path);
-      // Fast path: 4-hour temporary Dropbox CDN URL (no token exposed to browser)
       try {
         const linkRes = await invokeDropboxProxy({ action: 'get_temp_link', path: target });
         if (linkRes?.link) {
@@ -473,7 +521,6 @@
         }
       } catch {}
 
-      // Binary fallback through Edge Function if CDN fetch fails
       const sb = getSupabase();
       const { data, error } = await sb.functions.invoke(PROXY_FN, {
         body: { action: 'download_file', path: target }
@@ -481,12 +528,8 @@
       if (error) {
         throw new Error(await extractFunctionError(error));
       }
-      if (data instanceof Blob) {
-        return await data.arrayBuffer();
-      }
-      if (data instanceof ArrayBuffer) {
-        return data;
-      }
+      if (data instanceof Blob) return await data.arrayBuffer();
+      if (data instanceof ArrayBuffer) return data;
       throw new Error('Unexpected PDF download response.');
     },
 
@@ -569,11 +612,11 @@
       SafeStorage.remove('bp_dbx_used_redirect');
       bpState.pendingRedirectCode = '';
       bpState.dropboxConnected = Boolean(res?.connected);
-      if (res?.lockedRoot) bpState.lockedRoot = res.lockedRoot;
       bpState.dbxClientId = clientId;
+      if (res?.lockedRoot) bpState.lockedRoot = res.lockedRoot;
       bpState.folderCache.clear();
-      updateConnectionBadges();
-      return res;
+      await this.refreshStatus();
+      return true;
     },
 
     async disconnectAdmin(pin) {
@@ -588,34 +631,41 @@
           pin: cleanPin
         }
       });
-
       bpState.dropboxConnected = false;
       bpState.dbxEntries = [];
       bpState.folderCache.clear();
       updateConnectionBadges();
+      renderDropboxEntries();
+      return true;
     },
 
     captureRedirectCodeOnBoot() {
       try {
         const url = new URL(window.location.href);
         const code = url.searchParams.get('code');
-        const hasVerifier = Boolean(SafeStorage.get('bp_dbx_pkce_verifier', ''));
-        if (code && hasVerifier) {
+        const err = url.searchParams.get('error_description') || url.searchParams.get('error');
+        if (!code && !err) return;
+
+        url.searchParams.delete('code');
+        url.searchParams.delete('state');
+        url.searchParams.delete('error');
+        url.searchParams.delete('error_description');
+        window.history.replaceState({}, document.title, url.toString());
+
+        if (code) {
           bpState.pendingRedirectCode = code;
-          url.searchParams.delete('code');
-          url.searchParams.delete('state');
-          url.searchParams.delete('error');
-          url.searchParams.delete('error_description');
-          window.history.replaceState({}, document.title, url.toString());
+          notify('Dropbox redirect code received. Sign in as Admin → Dropbox Blueprints Setup and enter your PIN to finish.', 'info');
+        } else if (err) {
+          notify(`Dropbox OAuth error: ${err}`, 'error');
         }
       } catch {}
     }
   };
 
   // -----------------------------------------------------------------------
-  // 6. SHARED CALLOUT OVERLAYS SERVICE (Via ACT's supabaseClient)
+  // 6. SUPABASE CALLOUT LINKS & SCANNED-PAGE TRACKING
   // -----------------------------------------------------------------------
-  const OverlayService = {
+  const CalloutRepo = {
     toDbRow(link) {
       return {
         id: link.id,
@@ -633,6 +683,7 @@
         y: Number(link.y),
         w: Number(link.w) || 0.018,
         h: Number(link.h) || 0.026,
+        is_auto_scanned: Boolean(link.isAutoScanned),
         updated_at: new Date().toISOString()
       };
     },
@@ -652,9 +703,11 @@
         x: Number(row.x),
         y: Number(row.y),
         w: Number(row.w) || 0.018,
-        h: Number(row.h) || 0.026
+        h: Number(row.h) || 0.026,
+        isAutoScanned: Boolean(row.is_auto_scanned)
       };
     },
+
     async fetchAllLinks() {
       const sb = getSupabase();
       if (!sb || !isAppOnline()) return null;
@@ -665,6 +718,7 @@
       if (error) throw error;
       return (data || []).map((r) => this.fromDbRow(r));
     },
+
     async fetchLinksForDoc(sourceDocId) {
       const sb = getSupabase();
       if (!sb || !isAppOnline()) return null;
@@ -675,6 +729,7 @@
       if (error) throw error;
       return (data || []).map((r) => this.fromDbRow(r));
     },
+
     async upsertLink(link) {
       const sb = getSupabase();
       if (!sb || !isAppOnline()) return false;
@@ -682,11 +737,82 @@
       if (error) throw error;
       return true;
     },
+
+    async upsertManyLinks(links) {
+      const sb = getSupabase();
+      if (!sb || !isAppOnline() || !Array.isArray(links) || links.length === 0) return false;
+      const rows = links.map((l) => this.toDbRow(l));
+      const { error } = await sb.from(LINKS_TABLE).upsert(rows);
+      if (error) throw error;
+      return true;
+    },
+
     async deleteLink(linkId) {
       const sb = getSupabase();
       if (!sb || !isAppOnline()) return false;
       const { error } = await sb.from(LINKS_TABLE).delete().eq('id', linkId);
       if (error) throw error;
+      return true;
+    },
+
+    async deleteAutoScannedForPage(sourceDocId, sourcePage) {
+      const sb = getSupabase();
+      if (!sb || !isAppOnline()) return false;
+      const { error } = await sb
+        .from(LINKS_TABLE)
+        .delete()
+        .eq('source_doc_id', sourceDocId)
+        .eq('source_page', Number(sourcePage) || 1)
+        .eq('is_auto_scanned', true);
+      if (error) throw error;
+      return true;
+    },
+
+    async hasPageBeenScanned(docId, pageNum) {
+      const key = `${docId}::${Number(pageNum) || 1}`;
+      if (bpState.scannedPagesCache.has(key)) return true;
+
+      const sb = getSupabase();
+      if (!sb || !isAppOnline()) return true; // Never burn OCR credits offline or without DB check
+
+      const { data, error } = await sb
+        .from(SCANNED_PAGES_TABLE)
+        .select('doc_id')
+        .eq('doc_id', docId)
+        .eq('page_number', Number(pageNum) || 1)
+        .maybeSingle();
+
+      if (error) {
+        // If table doesn't exist yet or transient error, skip auto-scan safely
+        return true;
+      }
+      if (data) {
+        bpState.scannedPagesCache.add(key);
+        return true;
+      }
+      return false;
+    },
+
+    async markPageScanned({ docId, pageNum, sourcePath, folderPath, scanMethod, linksFound }) {
+      const key = `${docId}::${Number(pageNum) || 1}`;
+      bpState.scannedPagesCache.add(key);
+
+      const sb = getSupabase();
+      if (!sb || !isAppOnline()) return false;
+      const { error } = await sb.from(SCANNED_PAGES_TABLE).upsert({
+        doc_id: docId,
+        page_number: Number(pageNum) || 1,
+        source_path: sourcePath || null,
+        folder_path: folderPath || null,
+        scan_method: scanMethod || 'hybrid',
+        links_found: Number(linksFound) || 0,
+        scanned_by: getActiveUserDisplayName(),
+        scanned_at: new Date().toISOString()
+      });
+      if (error) {
+        console.warn('Could not record scanned page:', error.message);
+        return false;
+      }
       return true;
     }
   };
@@ -709,13 +835,13 @@
     if (!docId) return [];
     if (getSupabase() && isAppOnline()) {
       try {
-        const remoteLinks = await OverlayService.fetchLinksForDoc(docId);
-        if (Array.isArray(remoteLinks)) {
-          mergeLinksIntoState(remoteLinks, docId);
+        const remote = await CalloutRepo.fetchLinksForDoc(docId);
+        if (Array.isArray(remote)) {
+          mergeLinksIntoState(remote, docId);
           if (bpState.offlineSets.has(docId)) {
-            await ProDrawOfflineDB.saveOverlays(docId, remoteLinks);
+            await ProDrawOfflineDB.saveOverlays(docId, remote);
           }
-          return remoteLinks;
+          return remote;
         }
       } catch {}
     }
@@ -735,18 +861,18 @@
     if (!dbxPath) return null;
 
     const rootLower = getLockedRoot().toLowerCase();
-    const pLower = dbxPath.toLowerCase();
-    if (!pLower.startsWith(`${rootLower}/`) && pLower !== rootLower) {
+    const pathLower = dbxPath.toLowerCase();
+    if (pathLower !== rootLower && !pathLower.startsWith(`${rootLower}/`)) {
       notify('Referenced drawing is outside the permitted folder.', 'warning');
       return null;
     }
 
     const fileName = fallbackLink?.targetDocName || dbxPath.split('/').pop() || 'Drawing.pdf';
     const synthesized = {
-      docId: `dbx_${pLower}`,
+      docId: `dbx_${pathLower}`,
       name: fileName,
       source: 'dropbox',
-      dropboxPath: pLower,
+      dropboxPath: pathLower,
       dropboxDisplayPath: dbxPath,
       size: 0,
       numPages: 1
@@ -755,6 +881,696 @@
     return synthesized;
   }
 
+  async function saveDocAndOverlaysOffline(docMeta, includeLinkedTargets = true) {
+    if (!docMeta) return;
+    const buf = await getDocumentBuffer(docMeta);
+    if (!buf) throw new Error(`Could not download "${docMeta.name}".`);
+
+    const docLinks = await syncDocOverlays(docMeta.docId);
+    docMeta.isOffline = true;
+    await ProDrawOfflineDB.saveDocument(docMeta, buf);
+    await ProDrawOfflineDB.saveOverlays(docMeta.docId, docLinks);
+    bpState.offlineSets.set(docMeta.docId, docMeta);
+    bpState.projectFiles.set(docMeta.docId, docMeta);
+
+    let linkedSaved = 0;
+    if (includeLinkedTargets && docLinks.length > 0) {
+      const uniqueTargets = new Map();
+      docLinks.forEach((l) => {
+        if (l.targetDocId && l.targetDocId !== docMeta.docId && !bpState.offlineSets.has(l.targetDocId)) {
+          uniqueTargets.set(l.targetDocId, l);
+        }
+      });
+      for (const [targetId, linkRef] of uniqueTargets.entries()) {
+        try {
+          const targetMeta = ensureDocMetaRegistered(targetId, linkRef);
+          if (targetMeta) {
+            await saveDocAndOverlaysOffline(targetMeta, false);
+            linkedSaved += 1;
+          }
+        } catch {}
+      }
+    }
+
+    const suffix = linkedSaved > 0
+      ? ` + ${linkedSaved} linked sheet(s) & overlays saved offline`
+      : ` & ${docLinks.length} overlay(s) saved offline`;
+    notify(`"${docMeta.name}"${suffix}`, 'success');
+  }
+
+  async function removeDocAndOverlaysOffline(docId) {
+    const meta = bpState.projectFiles.get(docId) || bpState.offlineSets.get(docId);
+    await ProDrawOfflineDB.removeDocument(docId);
+    if (meta) meta.isOffline = false;
+    bpState.offlineSets.delete(docId);
+    notify(`Removed "${meta?.name || 'drawing'}" from offline cache`, 'info');
+  }
+
+  // -----------------------------------------------------------------------
+  // 7. ADMIN-ONLY HYBRID CALLOUT AUTO-SCANNER (PDF.js VECTOR + GEMINI OCR)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Extracts normalized construction sheet identifiers from a PDF filename
+   * (e.g., "S2.0 - Footing Details.pdf" -> ["S2.0"], "03_A-101_Plan.pdf" -> ["A101"]).
+   */
+  function extractSheetCodesFromFilename(filename) {
+    const base = String(filename || '').replace(/\.pdf$/i, '').trim();
+    const codes = new Set();
+
+    // Architectural / Structural / Civil / MEP sheet pattern: 1-3 letters + optional sep + digits + optional decimal/dash
+    const sheetRegex = /(?:^|[^A-Z0-9])([A-Z]{1,3}[-.\s]?\d{1,3}(?:[.\-]\d{1,3})?[A-Z]?)(?=$|[^A-Z0-9])/gi;
+    let m;
+    while ((m = sheetRegex.exec(base)) !== null) {
+      const canon = canonicalSheetCode(m[1]);
+      if (canon.length >= 2 && /[A-Z]/.test(canon) && /\d/.test(canon) && !IGNORED_SHEET_TOKENS.has(canon)) {
+        codes.add(canon);
+        // Also support trailing ".0" / ".00" equivalence only if the filename explicitly has a dot
+        if (/\.\d+$/.test(canon)) {
+          const trimmedZero = canon.replace(/\.0+$/, '.0');
+          codes.add(trimmedZero);
+        }
+      }
+    }
+
+    // Fallback: leading token before space/dash/underscore (e.g. "S1.01_Details" or "101_Plan")
+    const leadToken = base.split(/[\s_]+|\s+-\s+/)[0] || '';
+    const leadCanon = canonicalSheetCode(leadToken);
+    if (leadCanon.length >= 2 && !IGNORED_SHEET_TOKENS.has(leadCanon)) {
+      if (/[A-Z]/.test(leadCanon) && /\d/.test(leadCanon)) {
+        codes.add(leadCanon);
+      } else if (/^\d{2,4}(?:\.\d+)?$/.test(leadCanon)) {
+        // Purely numeric sheet code — kept with prefix marker so it only matches explicit `detail/sheet` callouts
+        codes.add(`NUM:${leadCanon}`);
+      }
+    }
+
+    return Array.from(codes);
+  }
+
+  /**
+   * Builds a lookup index for all sibling PDFs in the same folder (excluding self).
+   */
+  function buildSiblingSheetIndex(activeDocMeta, siblingDocs) {
+    const selfCodes = new Set(extractSheetCodesFromFilename(activeDocMeta.name));
+    const codeToDoc = new Map();
+    const numericToDoc = new Map();
+    const filenameToDoc = new Map();
+
+    siblingDocs.forEach((doc) => {
+      if (!doc || doc.docId === activeDocMeta.docId) return;
+      filenameToDoc.set(doc.name.toLowerCase(), doc);
+      filenameToDoc.set(normalizeSheetToken(doc.name.replace(/\.pdf$/i, '')), doc);
+
+      const codes = extractSheetCodesFromFilename(doc.name);
+      codes.forEach((c) => {
+        if (selfCodes.has(c)) return;
+        if (c.startsWith('NUM:')) {
+          const num = c.slice(4);
+          if (!numericToDoc.has(num)) numericToDoc.set(num, doc);
+        } else if (!codeToDoc.has(c)) {
+          codeToDoc.set(c, doc);
+        }
+      });
+    });
+
+    return { selfCodes, codeToDoc, numericToDoc, filenameToDoc, siblingDocs };
+  }
+
+  function resolveSheetCodeToSibling(rawSheetCode, siblingIndex, allowNumericOnly = false) {
+    const canon = canonicalSheetCode(rawSheetCode);
+    if (!canon || siblingIndex.selfCodes.has(canon)) return null;
+
+    if (siblingIndex.codeToDoc.has(canon)) {
+      return siblingIndex.codeToDoc.get(canon);
+    }
+    if (/\.\d+$/.test(canon)) {
+      const normalizedZero = canon.replace(/\.0+$/, '.0');
+      if (siblingIndex.codeToDoc.has(normalizedZero)) {
+        return siblingIndex.codeToDoc.get(normalizedZero);
+      }
+    }
+    if (allowNumericOnly && /^\d{2,4}(?:\.\d+)?$/.test(canon) && siblingIndex.numericToDoc.has(canon)) {
+      return siblingIndex.numericToDoc.get(canon);
+    }
+    return null;
+  }
+
+  function isLikelyTitleBlockPosition(x, y) {
+    // Bottom-right title block & extreme right border strip
+    if (x > 0.80 && y > 0.80) return true;
+    if (x > 0.92) return true;
+    return false;
+  }
+
+  /**
+   * Pads and clamps a raw normalized box so hotspots remain crisp and easy to tap.
+   */
+  function normalizeHotspotBox(x, y, w, h) {
+    const MIN_W = 0.016;
+    const MIN_H = 0.022;
+    const MAX_W = 0.085;
+    const MAX_H = 0.085;
+
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    const finalW = Math.min(MAX_W, Math.max(MIN_W, w + 0.004));
+    const finalH = Math.min(MAX_H, Math.max(MIN_H, h + 0.005));
+
+    return {
+      x: Math.max(0, Math.min(1 - finalW, cx - finalW / 2)),
+      y: Math.max(0, Math.min(1 - finalH, cy - finalH / 2)),
+      w: finalW,
+      h: finalH
+    };
+  }
+
+  function deduplicateDetections(candidates, existingManualLinks) {
+    const accepted = [];
+    const dist = (a, b) => Math.hypot((a.x + a.w / 2) - (b.x + b.w / 2), (a.y + a.h / 2) - (b.y + b.h / 2));
+
+    for (const c of candidates) {
+      // Never overlap an existing manual link
+      const hitsManual = existingManualLinks.some((m) => dist(c, m) < 0.024);
+      if (hitsManual) continue;
+
+      // Deduplicate nearby detections pointing to the same target sheet
+      const dup = accepted.find((a) => a.targetDoc.docId === c.targetDoc.docId && dist(a, c) < 0.028);
+      if (dup) {
+        // Keep the one with a richer label (e.g. "3/S2.0" over "S2.0")
+        if (c.label.includes('/') && !dup.label.includes('/')) {
+          dup.label = c.label;
+          dup.x = c.x;
+          dup.y = c.y;
+          dup.w = c.w;
+          dup.h = c.h;
+        }
+        continue;
+      }
+      accepted.push(c);
+    }
+    return accepted;
+  }
+
+  /**
+   * PASS 1: Fast, pixel-accurate PDF.js native vector text extraction.
+   * Detects both inline ("3/S2.0", "S2.0") and stacked CAD callout bubbles (detail # directly above sheet #).
+   */
+  async function scanPageVectorText(page, siblingIndex) {
+    const unscaled = page.getViewport({ scale: 1 });
+    const textContent = await page.getTextContent();
+    const rawItems = textContent?.items || [];
+    if (rawItems.length < 5) {
+      return { hasVectorText: false, detections: [] };
+    }
+
+    const items = [];
+    for (const item of rawItems) {
+      const str = String(item.str || '').trim();
+      if (!str || !Array.isArray(item.transform) || item.transform.length < 6) continue;
+
+      const tx = pdfjsLib.Util.transform(unscaled.transform, item.transform);
+      const fontH = Math.hypot(tx[2], tx[3]) || Math.abs(item.height) || 10;
+      const textW = item.width && item.width > 0 ? item.width : Math.max(fontH * 0.58 * str.length, 8);
+      const angle = Math.atan2(tx[1], tx[0]);
+      const isVertical = Math.abs(Math.sin(angle)) > 0.65;
+
+      let vx, vy, vw, vh;
+      if (isVertical) {
+        vw = fontH * 1.15;
+        vh = textW;
+        vx = tx[4] - vw / 2;
+        vy = tx[5] - (Math.sin(angle) < 0 ? vh : 0);
+      } else {
+        vw = textW;
+        vh = fontH * 1.15;
+        vx = tx[4];
+        vy = tx[5] - fontH;
+      }
+
+      const x = Math.max(0, Math.min(1, vx / (unscaled.width || 1)));
+      const y = Math.max(0, Math.min(1, vy / (unscaled.height || 1)));
+      const w = Math.max(0.002, Math.min(0.4, vw / (unscaled.width || 1)));
+      const h = Math.max(0.003, Math.min(0.2, vh / (unscaled.height || 1)));
+
+      items.push({ str, x, y, w, h, cx: x + w / 2, cy: y + h / 2 });
+    }
+
+    const detections = [];
+    const inlineFractionRe = /\b([A-Z0-9]{1,3})\s*\/\s*([A-Z]{1,3}[-.\s]?\d{1,3}(?:[.\-]\d{1,3})?[A-Z]?|\d{2,4}(?:\.\d+)?)\b/gi;
+    const standaloneSheetRe = /(?:^|[^A-Z0-9])([A-Z]{1,3}[-.\s]?\d{1,3}(?:[.\-]\d{1,3})?[A-Z]?)(?=$|[^A-Z0-9])/gi;
+
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      let matchedInline = false;
+
+      // 1A. Explicit inline callouts like "3/S2.0" or "A / S2.1"
+      inlineFractionRe.lastIndex = 0;
+      let fm;
+      while ((fm = inlineFractionRe.exec(it.str)) !== null) {
+        const detailNum = fm[1].toUpperCase();
+        const sheetRaw = fm[2].toUpperCase();
+        const targetDoc = resolveSheetCodeToSibling(sheetRaw, siblingIndex, true);
+        if (!targetDoc) continue;
+
+        matchedInline = true;
+        const box = normalizeHotspotBox(it.x, it.y, it.w, it.h);
+        detections.push({
+          ...box,
+          label: `${detailNum}/${canonicalSheetCode(sheetRaw)}`,
+          detailTitle: 'Auto-linked callout',
+          targetDoc
+        });
+      }
+      if (matchedInline) continue;
+
+      // 1B. Standalone sheet code (or bottom half of a stacked CAD callout bubble)
+      if (isLikelyTitleBlockPosition(it.x, it.y)) continue;
+
+      standaloneSheetRe.lastIndex = 0;
+      let sm;
+      while ((sm = standaloneSheetRe.exec(it.str)) !== null) {
+        const sheetRaw = sm[1].toUpperCase();
+        const targetDoc = resolveSheetCodeToSibling(sheetRaw, siblingIndex, false);
+        if (!targetDoc) continue;
+
+        // Check for a detail number directly above this sheet code (stacked callout bubble)
+        let detailAbove = null;
+        for (let j = 0; j < items.length; j++) {
+          if (i === j) continue;
+          const cand = items[j];
+          if (!/^[A-Z0-9]{1,3}$/i.test(cand.str)) continue;
+          const dx = Math.abs(cand.cx - it.cx);
+          const dy = it.cy - cand.cy; // positive means cand is above it
+          const maxDx = Math.max(it.w * 0.9, 0.015);
+          const maxDy = Math.max(it.h * 3.2, 0.025);
+          if (dx <= maxDx && dy > 0.002 && dy <= maxDy) {
+            detailAbove = cand;
+            break;
+          }
+        }
+
+        let bx = it.x;
+        let by = it.y;
+        let bw = it.w;
+        let bh = it.h;
+        let label = canonicalSheetCode(sheetRaw);
+
+        if (detailAbove) {
+          bx = Math.min(it.x, detailAbove.x);
+          by = Math.min(it.y, detailAbove.y);
+          const maxX = Math.max(it.x + it.w, detailAbove.x + detailAbove.w);
+          const maxY = Math.max(it.y + it.h, detailAbove.y + detailAbove.h);
+          bw = maxX - bx;
+          bh = maxY - by;
+          label = `${detailAbove.str.toUpperCase()}/${label}`;
+        }
+
+        const box = normalizeHotspotBox(bx, by, bw, bh);
+        detections.push({
+          ...box,
+          label,
+          detailTitle: 'Auto-linked callout',
+          targetDoc
+        });
+      }
+    }
+
+    return { hasVectorText: items.length >= 15, detections };
+  }
+
+  /**
+   * PASS 2: 2×2 Tiled Gemini Vision OCR fallback for scanned/raster PDFs or stroked CAD fonts.
+   * Uses ACT's existing `callGeminiWithFallback()` and cloud-synced Gemini OCR API key.
+   */
+  async function scanPageGeminiVisionTiled(page, siblingIndex, onProgress) {
+    if (typeof callGeminiWithFallback !== 'function') {
+      return { ok: false, reason: 'ACT Gemini OCR engine is not available.', detections: [] };
+    }
+    if (typeof getCleanApiKey === 'function' && !getCleanApiKey()) {
+      return { ok: false, reason: 'Gemini OCR API key not configured (Admin → OCR API Key Setup).', detections: [] };
+    }
+
+    // Build compact valid target list so Gemini strictly matches existing sibling PDFs
+    const siblingCatalog = siblingIndex.siblingDocs.map((doc) => ({
+      filename: doc.name,
+      codes: extractSheetCodesFromFilename(doc.name).map((c) => c.replace(/^NUM:/, ''))
+    }));
+
+    // Render full page at crisp resolution for 2×2 slicing
+    const unscaled = page.getViewport({ scale: 1 });
+    const maxDim = 2600;
+    const renderScale = Math.min(2.4, maxDim / Math.max(unscaled.width, unscaled.height));
+    const vp = page.getViewport({ scale: Math.max(1, renderScale) });
+
+    const fullCanvas = document.createElement('canvas');
+    fullCanvas.width = Math.floor(vp.width);
+    fullCanvas.height = Math.floor(vp.height);
+    const fullCtx = fullCanvas.getContext('2d', { alpha: false });
+    await page.render({ canvasContext: fullCtx, viewport: vp }).promise;
+
+    // 2×2 grid with 8% overlap so callout bubbles on center seams are never sliced
+    const overlap = 0.08;
+    const tiles = [
+      { x0: 0, y0: 0, x1: 0.5 + overlap / 2, y1: 0.5 + overlap / 2 },
+      { x0: 0.5 - overlap / 2, y0: 0, x1: 1, y1: 0.5 + overlap / 2 },
+      { x0: 0, y0: 0.5 - overlap / 2, x1: 0.5 + overlap / 2, y1: 1 },
+      { x0: 0.5 - overlap / 2, y0: 0.5 - overlap / 2, x1: 1, y1: 1 }
+    ];
+
+    const catalogText = siblingCatalog
+      .map((s) => `- "${s.filename}" (sheet codes: ${s.codes.join(', ') || 'filename match'})`)
+      .join('\n');
+
+    const promptText = `You are a construction blueprint callout detector.
+Inspect this section of an architectural/structural blueprint and find EVERY detail callout bubble, section cut marker, elevation marker, or sheet reference note that points to one of the sibling PDF drawings listed below.
+
+VALID TARGET DRAWINGS IN THIS FOLDER (ONLY return callouts that match one of these):
+${catalogText}
+
+STRICT RULES:
+1. Ignore the drawing's own title block, revision table, and general sheet index lists.
+2. Only return callouts whose referenced sheet number matches one of the valid target drawings listed above.
+3. For each callout, provide its tight bounding box [ymin, xmin, ymax, xmax] scaled 0 to 1000 relative to THIS image crop.
+4. Return ONLY valid JSON in this exact format (return {"callouts": []} if none are found):
+{
+  "callouts": [
+    {
+      "label": "3/S2.0",
+      "target_filename": "exact filename from the list above",
+      "detail_title": "short description if nearby or empty string",
+      "box_2d": [ymin, xmin, ymax, xmax]
+    }
+  ]
+}`;
+
+    const detections = [];
+    let completedTiles = 0;
+    let succeededTiles = 0;
+    let lastErrorReason = '';
+
+    const scanSingleTile = async (tile) => {
+      const sx = Math.floor(tile.x0 * fullCanvas.width);
+      const sy = Math.floor(tile.y0 * fullCanvas.height);
+      const sw = Math.max(100, Math.floor((tile.x1 - tile.x0) * fullCanvas.width));
+      const sh = Math.max(100, Math.floor((tile.y1 - tile.y0) * fullCanvas.height));
+
+      const tileCanvas = document.createElement('canvas');
+      tileCanvas.width = sw;
+      tileCanvas.height = sh;
+      tileCanvas.getContext('2d', { alpha: false }).drawImage(fullCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
+      const b64 = tileCanvas.toDataURL('image/jpeg', 0.84).split(',')[1];
+
+      const res = await callGeminiWithFallback({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: promptText },
+              { inlineData: { mimeType: 'image/jpeg', data: b64 } }
+            ]
+          }
+        ],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: 'application/json'
+        }
+      });
+
+      completedTiles += 1;
+      if (typeof onProgress === 'function') {
+        onProgress(completedTiles, tiles.length);
+      }
+
+      if (!res.ok) {
+        lastErrorReason = res.errorReason || 'Gemini OCR request failed.';
+        return;
+      }
+      succeededTiles += 1;
+
+      const rawText = (res.data?.candidates?.[0]?.content?.parts || [])
+        .filter((p) => !p.thought && p.text)
+        .map((p) => p.text)
+        .join('\n');
+      const cleaned = rawText.replace(/```json|```/gi, '').trim();
+      let parsed = null;
+      try {
+        parsed = JSON.parse(cleaned.match(/\{[\s\S]*\}/)?.[0] || cleaned);
+      } catch {
+        return;
+      }
+
+      const callouts = Array.isArray(parsed?.callouts) ? parsed.callouts : [];
+      for (const c of callouts) {
+        if (!Array.isArray(c.box_2d) || c.box_2d.length !== 4) continue;
+        const [ymin, xmin, ymax, xmax] = c.box_2d.map(Number);
+        if ([ymin, xmin, ymax, xmax].some((n) => isNaN(n))) continue;
+
+        // Resolve target sibling strictly from the folder catalog
+        const fnameLower = String(c.target_filename || '').trim().toLowerCase();
+        let targetDoc =
+          siblingIndex.filenameToDoc.get(fnameLower) ||
+          siblingIndex.filenameToDoc.get(normalizeSheetToken(fnameLower.replace(/\.pdf$/i, '')));
+
+        if (!targetDoc && c.label) {
+          const sheetPart = String(c.label).includes('/') ? String(c.label).split('/').pop() : String(c.label);
+          targetDoc = resolveSheetCodeToSibling(sheetPart, siblingIndex, true);
+        }
+        if (!targetDoc) continue;
+
+        // Convert tile 0..1000 coords back to full-page 0..1 coords
+        const tileW = tile.x1 - tile.x0;
+        const tileH = tile.y1 - tile.y0;
+        const gx = tile.x0 + (Math.max(0, Math.min(1000, xmin)) / 1000) * tileW;
+        const gy = tile.y0 + (Math.max(0, Math.min(1000, ymin)) / 1000) * tileH;
+        const gw = (Math.max(1, Math.min(1000, xmax) - Math.max(0, xmin)) / 1000) * tileW;
+        const gh = (Math.max(1, Math.min(1000, ymax) - Math.max(0, ymin)) / 1000) * tileH;
+
+        if (isLikelyTitleBlockPosition(gx, gy) && !String(c.label || '').includes('/')) continue;
+
+        const box = normalizeHotspotBox(gx, gy, gw, gh);
+        detections.push({
+          ...box,
+          label: String(c.label || targetDoc.name.replace(/\.pdf$/i, '')).trim(),
+          detailTitle: String(c.detail_title || 'Auto-scanned callout').trim(),
+          targetDoc
+        });
+      }
+    };
+
+    // Run 2 tiles in parallel at a time to stay fast while avoiding API rate spikes
+    await Promise.all([scanSingleTile(tiles[0]), scanSingleTile(tiles[1])]);
+    await Promise.all([scanSingleTile(tiles[2]), scanSingleTile(tiles[3])]);
+
+    if (succeededTiles === 0) {
+      return { ok: false, reason: lastErrorReason || 'Gemini OCR scan failed.', detections: [] };
+    }
+
+    return { ok: true, detections };
+  }
+
+  /**
+   * Main Admin-only page callout scanner (triggered automatically on first-open or manually via Re-Scan).
+   */
+  async function scanActivePageForCallouts({ isManualRescan = false } = {}) {
+    if (!isAdminUser()) {
+      if (isManualRescan) notify('Only Administrators can scan drawings for callout links.', 'warning');
+      return;
+    }
+    if (!bpState.activeDoc || !isAppOnline()) {
+      if (isManualRescan) notify('Open a drawing while online to scan callout links.', 'warning');
+      return;
+    }
+
+    const docMeta = bpState.activeDoc;
+    const pageNum = bpState.activePage;
+    const scanKey = `${docMeta.docId}::${pageNum}`;
+
+    if (bpState.inFlightScans.has(scanKey)) return;
+
+    // For automatic first-open scans, respect Admin toggle and verify cross-device table so it only runs once
+    if (!isManualRescan) {
+      if (!isAutoScanEnabled()) return;
+      const alreadyScanned = await CalloutRepo.hasPageBeenScanned(docMeta.docId, pageNum);
+      if (alreadyScanned) return;
+    }
+
+    bpState.inFlightScans.add(scanKey);
+    bpState.isScanningNow = true;
+    updateRescanButtonUI();
+
+    const busy = document.getElementById('bpPdfBusyIndicator');
+    const busyText = document.getElementById('bpPdfBusyText');
+    const setBusy = (msg) => {
+      if (busyText) busyText.textContent = msg;
+      busy?.classList.remove('hidden');
+    };
+
+    try {
+      setBusy(isManualRescan ? 'Re-scanning folder & sheet callouts...' : 'First-open Auto-Scan: checking sibling drawings...');
+
+      // 1. Gather sibling PDFs strictly in the SAME folder as the parent drawing
+      const folderPath = getDocFolderPath(docMeta);
+      let folderEntries = [];
+      if (docMeta.source === 'dropbox' && bpState.dropboxConnected) {
+        const cacheKey = folderPath.toLowerCase();
+        if (!isManualRescan && bpState.folderCache.has(cacheKey)) {
+          folderEntries = bpState.folderCache.get(cacheKey);
+        } else {
+          folderEntries = await DropboxProxy.listFolder(folderPath);
+          registerProjectSiblingFiles(folderEntries, folderPath);
+        }
+      }
+
+      const siblingDocs = folderEntries
+        .filter((e) => e['.tag'] === 'file' && String(e.name || '').toLowerCase().endsWith('.pdf'))
+        .map((e) => bpState.projectFiles.get(`dbx_${String(e.path_lower || '').toLowerCase()}`))
+        .filter((d) => d && d.docId !== docMeta.docId);
+
+      if (siblingDocs.length === 0) {
+        await CalloutRepo.markPageScanned({
+          docId: docMeta.docId,
+          pageNum,
+          sourcePath: docMeta.dropboxPath || '',
+          folderPath,
+          scanMethod: 'skipped_no_siblings',
+          linksFound: 0
+        });
+        if (isManualRescan) {
+          notify('No other PDF drawings found in this folder to link to.', 'info');
+        }
+        return;
+      }
+
+      const siblingIndex = buildSiblingSheetIndex(docMeta, siblingDocs);
+      const proxy = await getOrLoadPdfProxy(docMeta.docId);
+      const page = await proxy.getPage(pageNum);
+
+      // 2. Pass 1: Fast PDF.js vector text extraction
+      setBusy('Scanning PDF text layer for sheet callouts...');
+      const vectorResult = await scanPageVectorText(page, siblingIndex);
+      let detections = vectorResult.detections || [];
+      let scanMethod = 'vector_text';
+
+      // 3. Pass 2: Gemini Vision OCR fallback when vector text finds 0 callouts
+      if (detections.length === 0) {
+        setBusy('Running Gemini OCR callout scan (tile 0/4)...');
+        const ocrResult = await scanPageGeminiVisionTiled(page, siblingIndex, (done, total) => {
+          setBusy(`Running Gemini OCR callout scan (tile ${done}/${total})...`);
+        });
+        if (ocrResult.ok) {
+          detections = ocrResult.detections || [];
+          scanMethod = 'gemini_ocr';
+        } else {
+          scanMethod = 'vector_only_no_ocr_key';
+          if (isManualRescan) {
+            notify(ocrResult.reason || 'OCR scan unavailable.', 'warning');
+          }
+        }
+      }
+
+      // 4. Preserve manual callout links; replace only previous auto-scanned links on Re-Scan
+      const manualLinksOnPage = bpState.calloutLinks.filter(
+        (l) => l.sourceDocId === docMeta.docId && Number(l.sourcePage) === Number(pageNum) && !l.isAutoScanned
+      );
+      const finalDetections = deduplicateDetections(detections, manualLinksOnPage);
+
+      if (isManualRescan) {
+        try {
+          await CalloutRepo.deleteAutoScannedForPage(docMeta.docId, pageNum);
+        } catch (delErr) {
+          console.warn('Could not clear old auto-scanned links:', delErr);
+        }
+        bpState.calloutLinks = bpState.calloutLinks.filter(
+          (l) => !(l.sourceDocId === docMeta.docId && Number(l.sourcePage) === Number(pageNum) && l.isAutoScanned)
+        );
+      }
+
+      const nowTs = Date.now();
+      const newLinkObjects = finalDetections.map((d, idx) => ({
+        id: `auto_${nowTs}_${idx}_${Math.random().toString(36).slice(2, 6)}`,
+        sourceDocId: docMeta.docId,
+        sourcePath: docMeta.dropboxPath || '',
+        sourcePage: pageNum,
+        targetDocId: d.targetDoc.docId,
+        targetPath: d.targetDoc.dropboxPath || '',
+        targetDocName: d.targetDoc.name,
+        targetPage: 1,
+        label: d.label,
+        detailTitle: d.detailTitle || '',
+        color: 'blue',
+        x: d.x,
+        y: d.y,
+        w: d.w,
+        h: d.h,
+        isAutoScanned: true
+      }));
+
+      if (newLinkObjects.length > 0) {
+        bpState.calloutLinks.push(...newLinkObjects);
+        SafeStorage.setJSON('prodraw_callout_links', bpState.calloutLinks);
+        await CalloutRepo.upsertManyLinks(newLinkObjects);
+
+        if (bpState.offlineSets.has(docMeta.docId)) {
+          const docLinks = bpState.calloutLinks.filter((l) => l.sourceDocId === docMeta.docId);
+          await ProDrawOfflineDB.saveOverlays(docMeta.docId, docLinks);
+        }
+      } else if (isManualRescan) {
+        SafeStorage.setJSON('prodraw_callout_links', bpState.calloutLinks);
+      }
+
+      // 5. Mark page scanned in Supabase across all devices
+      await CalloutRepo.markPageScanned({
+        docId: docMeta.docId,
+        pageNum,
+        sourcePath: docMeta.dropboxPath || '',
+        folderPath,
+        scanMethod,
+        linksFound: newLinkObjects.length
+      });
+
+      // Re-render overlays if user is still viewing this exact sheet/page
+      if (bpState.activeDoc?.docId === docMeta.docId && bpState.activePage === pageNum) {
+        renderCalloutOverlays();
+      }
+
+      const engineTag = scanMethod === 'gemini_ocr' ? 'Gemini OCR' : 'Vector Scan';
+      if (newLinkObjects.length > 0) {
+        notify(`${engineTag}: auto-linked ${newLinkObjects.length} callout(s) to sibling drawings!`, 'success');
+      } else if (isManualRescan) {
+        notify(`${engineTag} complete: no matching sibling callouts found on this page.`, 'info');
+      }
+    } catch (err) {
+      console.error('Blueprint callout scan error:', err);
+      if (isManualRescan) {
+        notify(`Scan error: ${err.message}`, 'error');
+      }
+    } finally {
+      bpState.inFlightScans.delete(scanKey);
+      bpState.isScanningNow = bpState.inFlightScans.size > 0;
+      if (!bpState.isScanningNow) {
+        busy?.classList.add('hidden');
+      }
+      updateRescanButtonUI();
+    }
+  }
+
+  function updateRescanButtonUI() {
+    const btn = document.getElementById('bpRescanPageBtn');
+    const lbl = document.getElementById('bpRescanPageLabel');
+    if (!btn) return;
+    if (!isAdminUser()) {
+      btn.classList.add('hidden');
+      return;
+    }
+    btn.classList.remove('hidden');
+    btn.disabled = bpState.isScanningNow || !bpState.activeDoc;
+    if (lbl) lbl.textContent = bpState.isScanningNow ? 'Scanning...' : 'Re-Scan Links';
+  }
+
+  // -----------------------------------------------------------------------
+  // 8. PDF LOADING, RENDERING & VIEWPORT INTERACTION
+  // -----------------------------------------------------------------------
   async function getDocumentBuffer(docMeta) {
     if (!docMeta || !docMeta.docId) return null;
     if (bpState.memoryBlobs.has(docMeta.docId)) {
@@ -782,7 +1598,7 @@
     }
     const meta = bpState.projectFiles.get(docId) || bpState.offlineSets.get(docId);
     if (!meta) throw new Error('Drawing metadata not found.');
-    if (!window.pdfjsLib) throw new Error('PDF.js engine failed to load.');
+    if (!window.pdfjsLib) throw new Error('PDF.js engine is not loaded.');
 
     const buf = await getDocumentBuffer(meta);
     if (!buf) throw new Error(`Could not retrieve PDF data for "${meta.name}".`);
@@ -794,362 +1610,12 @@
     return proxy;
   }
 
-  async function saveDocAndOverlaysOffline(docMeta, includeLinkedTargets = true) {
-    if (!docMeta) return;
-    const buf = await getDocumentBuffer(docMeta);
-    if (!buf) throw new Error(`Could not download "${docMeta.name}".`);
-
-    const docLinks = await syncDocOverlays(docMeta.docId);
-    docMeta.isOffline = true;
-    await ProDrawOfflineDB.saveDocument(docMeta, buf);
-    await ProDrawOfflineDB.saveOverlays(docMeta.docId, docLinks);
-    bpState.offlineSets.set(docMeta.docId, docMeta);
-    bpState.projectFiles.set(docMeta.docId, docMeta);
-
-    let linkedSavedCount = 0;
-    if (includeLinkedTargets && docLinks.length > 0) {
-      const uniqueTargets = new Map();
-      docLinks.forEach((l) => {
-        if (l.targetDocId && l.targetDocId !== docMeta.docId && !bpState.offlineSets.has(l.targetDocId)) {
-          uniqueTargets.set(l.targetDocId, l);
-        }
-      });
-      for (const [targetId, linkRef] of uniqueTargets.entries()) {
-        try {
-          const targetMeta = ensureDocMetaRegistered(targetId, linkRef);
-          if (targetMeta) {
-            await saveDocAndOverlaysOffline(targetMeta, false);
-            linkedSavedCount += 1;
-          }
-        } catch {}
-      }
-    }
-
-    const extraMsg = linkedSavedCount > 0
-      ? ` + ${linkedSavedCount} linked sheet(s) & overlays saved offline!`
-      : ` & ${docLinks.length} overlay(s) saved offline!`;
-    notify(`"${docMeta.name}"${extraMsg}`, 'success');
-  }
-
-  async function removeDocAndOverlaysOffline(docId) {
-    const meta = bpState.projectFiles.get(docId) || bpState.offlineSets.get(docId);
-    await ProDrawOfflineDB.removeDocument(docId);
-    if (meta) meta.isOffline = false;
-    bpState.offlineSets.delete(docId);
-    notify(`Removed "${meta?.name || 'drawing'}" from offline storage.`, 'info');
-  }
-
-  // -----------------------------------------------------------------------
-  // 7. CONNECTION BADGES & ROLE PERMISSIONS UI
-  // -----------------------------------------------------------------------
-  function updateConnectionBadges() {
-    const connected = bpState.dropboxConnected;
-    const dot1 = document.getElementById('bpStatusDot');
-    const dot2 = document.getElementById('bpModalDbxStatusDot');
-    const sub = document.getElementById('bpModalDbxAccountSubtitle');
-    const drawerBadge = document.getElementById('drawerDbxBpStatus');
-    const adminBadge = document.getElementById('bpAdminConnBadge');
-    const adminRootLbl = document.getElementById('bpAdminLockedRootLabel');
-    const adminClientInp = document.getElementById('bpAdminClientIdInput');
-    const adminRedirInp = document.getElementById('bpAdminRedirectUriInput');
-    const adminDiscBtn = document.getElementById('bpAdminDisconnectBtn');
-    const adminStatusInfo = document.getElementById('bpAdminStatusInfo');
-
-    if (adminRootLbl) adminRootLbl.textContent = getLockedRoot();
-    if (adminRedirInp) adminRedirInp.value = DropboxProxy.getRedirectUri();
-    if (adminClientInp && !adminClientInp.value) {
-      adminClientInp.value = bpState.dbxClientId || SafeStorage.get('bp_dbx_client_id_draft', '');
-    }
-
-    if (connected) {
-      dot1?.classList.remove('bg-amber-300');
-      dot1?.classList.add('bg-emerald-400');
-      dot2?.classList.remove('bg-amber-400');
-      dot2?.classList.add('bg-emerald-400');
-      if (sub) sub.textContent = `Connected via Server Proxy • ${getLockedRoot()}`;
-      if (drawerBadge) {
-        drawerBadge.textContent = 'Synced';
-        drawerBadge.className = 'text-[10px] text-emerald-400 font-mono font-bold';
-      }
-      if (adminBadge) {
-        adminBadge.textContent = 'Connected (Server Proxy)';
-        adminBadge.className = 'text-[11px] font-mono px-2.5 py-1 rounded-lg bg-emerald-950 text-emerald-300 border border-emerald-500/40 shrink-0';
-      }
-      adminDiscBtn?.classList.remove('hidden');
-      if (adminStatusInfo) {
-        const when = bpState.dbxUpdatedAt ? new Date(bpState.dbxUpdatedAt).toLocaleString() : 'Active';
-        adminStatusInfo.textContent = `Tokens are stored server-side only (never sent to browsers). Last refreshed: ${when}`;
-      }
-    } else {
-      dot1?.classList.remove('bg-emerald-400');
-      dot1?.classList.add('bg-amber-300');
-      dot2?.classList.remove('bg-emerald-400');
-      dot2?.classList.add('bg-amber-400');
-      if (sub) sub.textContent = 'Not Connected — Admin must authorize in Admin → Dropbox Blueprints Setup';
-      if (drawerBadge) {
-        drawerBadge.textContent = 'Setup';
-        drawerBadge.className = 'text-[10px] text-amber-400 font-mono font-bold';
-      }
-      if (adminBadge) {
-        adminBadge.textContent = 'Not Connected';
-        adminBadge.className = 'text-[11px] font-mono px-2.5 py-1 rounded-lg bg-slate-900 text-amber-400 shrink-0';
-      }
-      adminDiscBtn?.classList.add('hidden');
-      if (adminStatusInfo) {
-        adminStatusInfo.textContent = 'Authorize once as an Admin below. All field devices will then browse blueprints automatically through Supabase Edge Functions.';
-      }
-    }
-  }
-
-  function applyRolePermissionsUI() {
-    const editable = canEditCallouts();
-    const admin = isAdminUser();
-
-    const addEditBtn = document.getElementById('bpToggleAddLinkBtn');
-    const addBanner = document.getElementById('bpAddLinkBanner');
-    const adminSetupShortcut = document.getElementById('bpOpenAdminSetupShortcutBtn');
-
-    if (!editable) {
-      bpState.addLinkMode = false;
-      addEditBtn?.classList.add('hidden');
-      addEditBtn?.classList.remove('bg-amber-500', 'text-slate-950');
-      addBanner?.classList.add('hidden');
-    } else {
-      addEditBtn?.classList.remove('hidden');
-    }
-
-    if (adminSetupShortcut) {
-      adminSetupShortcut.classList.toggle('hidden', !admin);
-    }
-
-    // Blueprints tab in Side Menu is visible to ALL 4 roles (admin, pm, supervisor, crew)
-    const menuBtn = document.getElementById('menuFeatBlueprints');
-    if (menuBtn) {
-      menuBtn.classList.remove('hidden');
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // 8. DROPBOX BROWSER & OFFLINE LIBRARY MODAL
-  // -----------------------------------------------------------------------
-  async function loadDropboxFolder(path = '') {
-    const targetPath = clampPath(path);
-    bpState.dbxPath = targetPath;
-
-    const container = document.getElementById('bpDbxEntriesContainer');
-    const crumbBar = document.getElementById('bpDbxBreadcrumbBar');
-
-    if (crumbBar) {
-      crumbBar.innerHTML = '';
-      const lockedRoot = getLockedRoot();
-      const parts = targetPath.split('/').filter(Boolean);
-      let running = '';
-
-      parts.forEach((seg) => {
-        running += '/' + seg;
-        const segPath = running;
-        if (segPath.toLowerCase().length < lockedRoot.toLowerCase().length) return;
-        if (crumbBar.children.length > 0) {
-          const sep = document.createElement('span');
-          sep.className = 'text-slate-400';
-          sep.textContent = '/';
-          crumbBar.appendChild(sep);
-        }
-        const btn = document.createElement('button');
-        btn.type = 'button';
-        btn.className = 'px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-900 shrink-0';
-        btn.textContent = seg;
-        btn.addEventListener('click', () => loadDropboxFolder(segPath));
-        crumbBar.appendChild(btn);
-      });
-    }
-
-    if (!isAppOnline()) {
-      if (container) {
-        container.innerHTML = `<div class="p-6 text-center text-xs text-slate-500">You are currently offline. Switch to the <strong>Offline Saved PDFs</strong> tab above to open saved blueprints.</div>`;
-      }
-      return;
-    }
-
-    if (!bpState.dropboxConnected) {
-      await DropboxProxy.refreshStatus();
-    }
-
-    if (!bpState.dropboxConnected) {
-      if (container) {
-        const msg = isAdminUser()
-          ? `Dropbox is not connected yet. Open <strong>Admin → Dropbox Blueprints Setup</strong> to connect once for all devices.`
-          : `Dropbox is not connected yet. Please ask an ACT Administrator to connect Dropbox in Admin Setup.`;
-        container.innerHTML = `<div class="p-6 text-center text-xs text-slate-600">${msg}</div>`;
-      }
-      return;
-    }
-
-    if (container) {
-      container.innerHTML = `<div class="p-6 text-center text-xs text-slate-500">Loading folder...</div>`;
-    }
-
-    try {
-      const entries = await DropboxProxy.listFolder(targetPath);
-      bpState.dbxEntries = entries;
-      registerProjectSiblingFiles(entries, targetPath);
-      renderDropboxEntries();
-      updateViewerHeaderBar();
-    } catch (err) {
-      if (container) {
-        container.innerHTML = `<div class="p-4 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800">${escapeHtml(err.message)}</div>`;
-      }
-    }
-  }
-
-  function renderDropboxEntries() {
-    const container = document.getElementById('bpDbxEntriesContainer');
-    if (!container) return;
-
-    const filtered = (bpState.dbxEntries || [])
-      .filter((e) => e['.tag'] === 'folder' || (e['.tag'] === 'file' && e.name.toLowerCase().endsWith('.pdf')))
-      .sort((a, b) =>
-        a['.tag'] !== b['.tag']
-          ? a['.tag'] === 'folder' ? -1 : 1
-          : a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
-      );
-
-    if (filtered.length === 0) {
-      container.innerHTML = `<div class="p-6 text-center text-xs text-slate-500">No subfolders or PDF blueprints found in this folder.</div>`;
-      return;
-    }
-
-    container.innerHTML = '';
-    filtered.forEach((entry) => {
-      const isFolder = entry['.tag'] === 'folder';
-      const row = document.createElement('div');
-      row.className = 'p-2.5 rounded-xl bg-white hover:bg-sky-50/60 border border-slate-200 flex items-center justify-between gap-2 cursor-pointer transition';
-
-      if (isFolder) {
-        row.innerHTML = `
-          <div class="flex items-center gap-2.5 min-w-0">
-            <span class="text-amber-500 font-bold text-sm">📁</span>
-            <span class="text-xs font-bold text-slate-900 truncate">${escapeHtml(entry.name)}</span>
-          </div>
-          <span class="text-xs text-slate-400">→</span>
-        `;
-        row.addEventListener('click', () => loadDropboxFolder(entry.path_display || entry.path_lower));
-      } else {
-        const docId = `dbx_${entry.path_lower}`;
-        const isOff = bpState.offlineSets.has(docId);
-        row.innerHTML = `
-          <div class="flex items-center gap-2.5 min-w-0 flex-1">
-            <span class="text-sky-600 font-bold text-sm">📄</span>
-            <div class="min-w-0 flex-1">
-              <div class="text-xs font-bold text-slate-900 truncate">${escapeHtml(entry.name)}</div>
-              <div class="text-[10px] font-mono text-slate-500">${formatBytes(entry.size)} ${isOff ? '• Available Offline' : ''}</div>
-            </div>
-          </div>
-          <button type="button" data-off-btn="1"
-            class="px-2.5 py-1 rounded-lg text-[11px] font-bold border shrink-0 ${
-              isOff
-                ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
-                : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
-            }">
-            ${isOff ? '✓ Offline' : 'Make Offline'}
-          </button>
-        `;
-        row.addEventListener('click', async (e) => {
-          if (e.target.closest('[data-off-btn]')) return;
-          document.getElementById('bpDropboxModal')?.classList.add('hidden');
-          await openBlueprintDocument(docId, 1);
-        });
-        row.querySelector('[data-off-btn]')?.addEventListener('click', async (e) => {
-          e.stopPropagation();
-          const meta = bpState.projectFiles.get(docId);
-          if (!meta) return;
-          try {
-            if (bpState.offlineSets.has(docId)) {
-              await removeDocAndOverlaysOffline(docId);
-            } else {
-              await saveDocAndOverlaysOffline(meta, true);
-            }
-          } catch (err) {
-            notify(err.message, 'error');
-          }
-          renderDropboxEntries();
-          renderOfflineModalList();
-          updateViewerHeaderBar();
-        });
-      }
-      container.appendChild(row);
-    });
-  }
-
-  function renderOfflineModalList() {
-    const modalList = document.getElementById('bpModalPanelOffline');
-    const docs = Array.from(bpState.offlineSets.values()).sort((a, b) =>
-      a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
-    );
-    const countEl = document.getElementById('bpModalOfflineCount');
-    if (countEl) countEl.textContent = String(docs.length);
-
-    if (!modalList) return;
-    if (docs.length === 0) {
-      modalList.innerHTML = `<div class="p-6 text-center text-xs text-slate-500">No blueprints saved offline on this device yet.</div>`;
-      return;
-    }
-
-    modalList.innerHTML = '';
-    docs.forEach((doc) => {
-      const row = document.createElement('div');
-      row.className = 'p-2.5 rounded-xl bg-white hover:bg-sky-50/60 border border-slate-200 flex items-center justify-between gap-2 cursor-pointer transition';
-      row.innerHTML = `
-        <div class="min-w-0 flex-1">
-          <div class="text-xs font-bold truncate text-slate-900">${escapeHtml(doc.name)}</div>
-          <div class="text-[10px] font-mono text-slate-500">Offline Ready • ${formatBytes(doc.size)}</div>
-        </div>
-        <button type="button" data-rm-off="1"
-          class="px-2 py-1 rounded-lg text-[10px] font-bold shrink-0 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200">
-          Remove
-        </button>
-      `;
-      row.addEventListener('click', async (e) => {
-        if (e.target.closest('[data-rm-off]')) return;
-        document.getElementById('bpDropboxModal')?.classList.add('hidden');
-        await openBlueprintDocument(doc.docId, 1);
-      });
-      row.querySelector('[data-rm-off]')?.addEventListener('click', async (e) => {
-        e.stopPropagation();
-        await removeDocAndOverlaysOffline(doc.docId);
-        renderOfflineModalList();
-        renderDropboxEntries();
-        updateViewerHeaderBar();
-      });
-      modalList.appendChild(row);
-    });
-  }
-
-  function openDropboxModal(overrideFolderPath = null) {
-    document.getElementById('bpDropboxModal')?.classList.remove('hidden');
-    applyRolePermissionsUI();
-    updateConnectionBadges();
-    renderOfflineModalList();
-
-    if (!isAppOnline()) {
-      document.getElementById('bpModalTabOfflineBtn')?.click();
-      return;
-    }
-
-    const startPath = overrideFolderPath || bpState.dbxPath || getDocFolderPath(bpState.activeDoc) || '';
-    loadDropboxFolder(startPath);
-  }
-
-  // -----------------------------------------------------------------------
-  // 9. HIGH-DPI PDF VIEWER, PAN/PINCH-ZOOM & CALLOUT OVERLAYS
-  // -----------------------------------------------------------------------
   async function openBlueprintDocument(docId, pageNum = 1, pushHistory = false, linkFallback = null) {
     const meta = ensureDocMetaRegistered(docId, linkFallback);
     if (!meta) {
       notify('Target drawing not found.', 'error');
       return;
     }
-
     if (pushHistory && bpState.activeDoc) {
       bpState.historyStack.push({
         doc: bpState.activeDoc,
@@ -1165,6 +1631,7 @@
     if (busyText) busyText.textContent = `Opening ${meta.name}...`;
     busy?.classList.remove('hidden');
 
+    let openedOk = false;
     try {
       const [proxy] = await Promise.all([
         getOrLoadPdfProxy(meta.docId),
@@ -1174,10 +1641,18 @@
       bpState.activePage = Math.min(Math.max(1, Number(pageNum) || 1), proxy.numPages || 1);
       await renderActivePageBase(true);
       updateViewerHeaderBar();
+      openedOk = true;
     } catch (err) {
       notify(`Error opening PDF: ${err.message}`, 'error');
     } finally {
-      busy?.classList.add('hidden');
+      if (!bpState.isScanningNow) {
+        busy?.classList.add('hidden');
+      }
+    }
+
+    // Admin-only first-open automatic callout scan (runs strictly once per doc+page across all devices)
+    if (openedOk && isAdminUser() && isAppOnline()) {
+      scanActivePageForCallouts({ isManualRescan: false }).catch(() => {});
     }
   }
 
@@ -1250,7 +1725,7 @@
 
   function scheduleViewportDetailRender() {
     clearTimeout(bpState.detailDebounceTimer);
-    if (!bpState.isOpen || !bpState.activeDoc || bpState.zoom <= 1.05) {
+    if (!bpState.activeDoc || bpState.zoom <= 1.05 || !bpState.isOpen) {
       document.getElementById('bpPdfDetailCanvas')?.classList.add('hidden');
       return;
     }
@@ -1258,7 +1733,7 @@
   }
 
   async function renderViewportDetailOverlay() {
-    if (!bpState.isOpen || !bpState.activeDoc || bpState.zoom <= 1.05 || bpState.isInteracting) return;
+    if (!bpState.activeDoc || bpState.zoom <= 1.05 || bpState.isInteracting || !bpState.isOpen) return;
     const viewport = document.getElementById('bpCanvasViewport');
     const detailCanvas = document.getElementById('bpPdfDetailCanvas');
     if (!viewport || !detailCanvas) return;
@@ -1340,75 +1815,6 @@
     if (zoomLabel) zoomLabel.textContent = `${Math.round(bpState.zoom * 100)}%`;
   }
 
-  function updateViewerHeaderBar() {
-    const pillText = document.getElementById('bpActiveSheetPillText');
-    const sourceTag = document.getElementById('bpActiveSetSourceTag');
-    const stepper = document.getElementById('bpMultiPageStepperWrap');
-    const pageInd = document.getElementById('bpMultiPageIndicatorText');
-    const offLabel = document.getElementById('bpSaveOfflineLabel');
-    const offPill = document.getElementById('bpOfflineBadgePill');
-    const backBtn = document.getElementById('bpBackHistoryPillBtn');
-    const backText = document.getElementById('bpBackHistoryPillText');
-
-    if (!bpState.activeDoc) {
-      if (pillText) pillText.textContent = 'Select Blueprint...';
-      if (sourceTag) sourceTag.textContent = 'PDF';
-      stepper?.classList.add('hidden');
-      if (offLabel) offLabel.textContent = 'Available Offline';
-      offPill?.classList.add('hidden');
-    } else {
-      if (pillText) pillText.textContent = bpState.activeDoc.name;
-      if (sourceTag) sourceTag.textContent = bpState.activeDoc.source === 'dropbox' ? 'DBX' : 'PDF';
-      const total = bpState.activeDoc.numPages || 1;
-      if (total > 1) {
-        stepper?.classList.remove('hidden');
-        stepper?.classList.add('flex');
-        if (pageInd) pageInd.textContent = `${bpState.activePage}/${total}`;
-      } else {
-        stepper?.classList.add('hidden');
-      }
-
-      const isOff = bpState.offlineSets.has(bpState.activeDoc.docId);
-      if (offPill) {
-        offPill.classList.remove('hidden');
-        offPill.textContent = isOff ? 'ON' : 'OFF';
-        offPill.className = isOff
-          ? 'text-[10px] font-mono uppercase px-1.5 py-0.2 rounded bg-emerald-500/25 text-emerald-300 border border-emerald-500/50'
-          : 'text-[10px] font-mono uppercase px-1.5 py-0.2 rounded bg-slate-700 text-slate-300 border border-slate-600';
-      }
-    }
-
-    if (bpState.historyStack.length > 0) {
-      const prev = bpState.historyStack[bpState.historyStack.length - 1];
-      backBtn?.classList.remove('hidden');
-      backBtn?.classList.add('flex');
-      if (backText) backText.textContent = `← Back to ${prev.doc.name} (Pg ${prev.page})`;
-    } else {
-      backBtn?.classList.add('hidden');
-      backBtn?.classList.remove('flex');
-    }
-  }
-
-  async function toggleActiveDocOffline() {
-    if (!bpState.activeDoc) {
-      notify('Open a blueprint first.', 'info');
-      return;
-    }
-    const docId = bpState.activeDoc.docId;
-    try {
-      if (bpState.offlineSets.has(docId)) {
-        await removeDocAndOverlaysOffline(docId);
-      } else {
-        await saveDocAndOverlaysOffline(bpState.activeDoc, true);
-      }
-    } catch (err) {
-      notify(err.message, 'error');
-    }
-    updateViewerHeaderBar();
-    renderOfflineModalList();
-    renderDropboxEntries();
-  }
-
   function renderCalloutOverlays() {
     const layer = document.getElementById('bpCalloutOverlayLayer');
     if (!layer) return;
@@ -1429,7 +1835,8 @@
       badge.style.top = `${(link.y * 100).toFixed(4)}%`;
       badge.style.width = `${((link.w || 0.018) * 100).toFixed(4)}%`;
       badge.style.height = `${((link.h || 0.026) * 100).toFixed(4)}%`;
-      badge.title = `${link.label}${link.detailTitle ? ` — ${link.detailTitle}` : ''} → ${link.targetDocName} (Pg ${link.targetPage})`;
+      const autoTag = link.isAutoScanned ? ' [Auto-Scanned]' : '';
+      badge.title = `${link.label}${link.detailTitle ? ` — ${link.detailTitle}` : ''} → ${link.targetDocName} (Pg ${link.targetPage})${autoTag}`;
 
       badge.addEventListener('click', async (e) => {
         e.stopPropagation();
@@ -1459,7 +1866,7 @@
     };
 
     viewport.addEventListener('wheel', (e) => {
-      if (!bpState.activeDoc) return;
+      if (!bpState.activeDoc || !bpState.isOpen) return;
       e.preventDefault();
       const rect = viewport.getBoundingClientRect();
       const mx = e.clientX - rect.left;
@@ -1474,7 +1881,7 @@
     }, { passive: false });
 
     viewport.addEventListener('pointerdown', (e) => {
-      if (!bpState.activeDoc) return;
+      if (!bpState.activeDoc || !bpState.isOpen) return;
       if (e.target.closest('.bp-callout-badge') || e.target.closest('button')) return;
 
       viewport.setPointerCapture(e.pointerId);
@@ -1599,14 +2006,268 @@
 
     window.addEventListener('resize', () => {
       if (bpState.isOpen) {
-        positionBlueprintsViewport();
+        positionBlueprintsSection();
         if (bpState.activeDoc) scheduleViewportDetailRender();
       }
     });
   }
 
   // -----------------------------------------------------------------------
-  // 10. CALLOUT LINK MODAL (CURRENT-FOLDER-FIRST TARGET PICKER)
+  // 9. DROPBOX BROWSER & OFFLINE LIBRARY MODAL UI
+  // -----------------------------------------------------------------------
+  function updateConnectionBadges() {
+    const connected = bpState.dropboxConnected;
+    const dot1 = document.getElementById('bpStatusDot');
+    const dot2 = document.getElementById('bpModalDbxStatusDot');
+    const sub = document.getElementById('bpModalDbxAccountSubtitle');
+    const drawerBadge = document.getElementById('drawerDbxBpStatus');
+    const adminBadge = document.getElementById('bpAdminConnBadge');
+    const adminInfo = document.getElementById('bpAdminStatusInfo');
+    const adminRootLbl = document.getElementById('bpAdminLockedRootLabel');
+    const adminDiscBtn = document.getElementById('bpAdminDisconnectBtn');
+    const adminClientInput = document.getElementById('bpAdminClientIdInput');
+    const adminRedirInput = document.getElementById('bpAdminRedirectUriInput');
+    const autoScanToggle = document.getElementById('bpAdminAutoScanToggle');
+
+    if (adminRootLbl) adminRootLbl.textContent = getLockedRoot();
+    if (adminRedirInput) adminRedirInput.value = DropboxProxy.getRedirectUri();
+    if (autoScanToggle) autoScanToggle.checked = isAutoScanEnabled();
+    if (adminClientInput && !adminClientInput.value) {
+      adminClientInput.value = bpState.dbxClientId || SafeStorage.get('bp_dbx_client_id_draft', '');
+    }
+
+    if (connected) {
+      dot1?.classList.remove('bg-amber-300');
+      dot1?.classList.add('bg-emerald-400');
+      dot2?.classList.remove('bg-amber-400');
+      dot2?.classList.add('bg-emerald-400');
+      if (sub) sub.textContent = `Connected via Server Proxy • Locked to ${getLockedRoot()}`;
+      if (drawerBadge) {
+        drawerBadge.textContent = 'Synced';
+        drawerBadge.className = 'text-[10px] text-emerald-400 font-mono font-bold';
+      }
+      if (adminBadge) {
+        adminBadge.textContent = 'Connected';
+        adminBadge.className = 'text-[11px] font-mono px-2.5 py-1 rounded-lg bg-emerald-950 text-emerald-300 border border-emerald-500/40 shrink-0';
+      }
+      if (adminInfo) {
+        const ts = bpState.dbxUpdatedAt ? new Date(bpState.dbxUpdatedAt).toLocaleString() : 'Active';
+        adminInfo.textContent = `Server-side Dropbox token is active (last refreshed: ${ts}). Re-authorizing below rotates the stored token for all devices.`;
+      }
+      adminDiscBtn?.classList.remove('hidden');
+    } else {
+      dot1?.classList.remove('bg-emerald-400');
+      dot1?.classList.add('bg-amber-300');
+      dot2?.classList.remove('bg-emerald-400');
+      dot2?.classList.add('bg-amber-400');
+      if (sub) {
+        sub.textContent = isAdminUser()
+          ? 'Not Connected • Click Admin Setup to authorize Dropbox'
+          : 'Not Connected • Ask an ACT Administrator to connect Dropbox';
+      }
+      if (drawerBadge) {
+        drawerBadge.textContent = 'Setup';
+        drawerBadge.className = 'text-[10px] text-amber-400 font-mono font-bold';
+      }
+      if (adminBadge) {
+        adminBadge.textContent = 'Not Connected';
+        adminBadge.className = 'text-[11px] font-mono px-2.5 py-1 rounded-lg bg-slate-900 text-amber-400 shrink-0';
+      }
+      if (adminInfo) {
+        adminInfo.textContent = bpState.pendingRedirectCode
+          ? 'Redirect authorization code captured! Enter your 4-digit Admin PIN and click Connect below to finish.'
+          : 'Not connected yet. Enter your Dropbox App Key and 4-digit Admin PIN below to authorize read-only access for all ACT users.';
+      }
+      adminDiscBtn?.classList.add('hidden');
+    }
+  }
+
+  async function loadDropboxFolder(path = '') {
+    const targetPath = clampPath(path);
+    bpState.dbxPath = targetPath;
+
+    const container = document.getElementById('bpDbxEntriesContainer');
+    const crumbBar = document.getElementById('bpDbxBreadcrumbBar');
+
+    if (crumbBar) {
+      crumbBar.innerHTML = '';
+      const lockedRoot = getLockedRoot();
+      const parts = targetPath.split('/').filter(Boolean);
+      let running = '';
+
+      parts.forEach((seg) => {
+        running += '/' + seg;
+        const segPath = running;
+        if (segPath.toLowerCase().length < lockedRoot.toLowerCase().length) return;
+        if (crumbBar.children.length > 0) {
+          const sep = document.createElement('span');
+          sep.className = 'text-slate-400';
+          sep.textContent = '/';
+          crumbBar.appendChild(sep);
+        }
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'px-2 py-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-900 shrink-0';
+        btn.textContent = seg;
+        btn.addEventListener('click', () => loadDropboxFolder(segPath));
+        crumbBar.appendChild(btn);
+      });
+    }
+
+    if (!isAppOnline()) {
+      if (container) {
+        container.innerHTML = `<div class="p-6 text-center text-xs text-slate-500">Device is offline. Switch to the <strong>Offline Saved PDFs</strong> tab above to view cached drawings.</div>`;
+      }
+      return;
+    }
+
+    if (container) {
+      container.innerHTML = `<div class="p-6 text-center text-xs text-slate-500">Loading folder...</div>`;
+    }
+
+    try {
+      const entries = await DropboxProxy.listFolder(targetPath);
+      bpState.dbxEntries = entries;
+      registerProjectSiblingFiles(entries, targetPath);
+      renderDropboxEntries();
+      updateViewerHeaderBar();
+    } catch (err) {
+      if (container) {
+        container.innerHTML = `<div class="p-4 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-800">${escapeHtml(err.message)}</div>`;
+      }
+    }
+  }
+
+  function renderDropboxEntries() {
+    const container = document.getElementById('bpDbxEntriesContainer');
+    if (!container) return;
+
+    const filtered = (bpState.dbxEntries || [])
+      .filter((e) => e['.tag'] === 'folder' || (e['.tag'] === 'file' && e.name.toLowerCase().endsWith('.pdf')))
+      .sort((a, b) => (a['.tag'] !== b['.tag']
+        ? (a['.tag'] === 'folder' ? -1 : 1)
+        : a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })));
+
+    if (filtered.length === 0) {
+      container.innerHTML = `<div class="p-6 text-center text-xs text-slate-500">No subfolders or PDF blueprints found in this folder.</div>`;
+      return;
+    }
+
+    container.innerHTML = '';
+    filtered.forEach((entry) => {
+      const isFolder = entry['.tag'] === 'folder';
+      const row = document.createElement('div');
+      row.className = 'p-2.5 rounded-xl bg-white hover:bg-sky-50/60 border border-slate-200 flex items-center justify-between gap-2 cursor-pointer transition';
+
+      if (isFolder) {
+        row.innerHTML = `
+          <div class="flex items-center gap-2.5 min-w-0">
+            <span class="text-amber-500 font-bold text-sm">📁</span>
+            <span class="text-xs font-bold text-slate-900 truncate">${escapeHtml(entry.name)}</span>
+          </div>
+          <span class="text-xs text-slate-400">→</span>
+        `;
+        row.addEventListener('click', () => loadDropboxFolder(entry.path_display || entry.path_lower));
+      } else {
+        const docId = `dbx_${String(entry.path_lower || '').toLowerCase()}`;
+        const isOff = bpState.offlineSets.has(docId);
+        row.innerHTML = `
+          <div class="flex items-center gap-2.5 min-w-0 flex-1">
+            <span class="text-sky-600 font-bold text-sm">📄</span>
+            <div class="min-w-0 flex-1">
+              <div class="text-xs font-bold text-slate-900 truncate">${escapeHtml(entry.name)}</div>
+              <div class="text-[10px] font-mono text-slate-500">${formatBytes(entry.size)} ${isOff ? '• Available Offline' : ''}</div>
+            </div>
+          </div>
+          <button type="button" data-off-btn="1"
+            class="px-2.5 py-1 rounded-lg text-[11px] font-bold border shrink-0 ${isOff ? 'bg-emerald-100 text-emerald-800 border-emerald-300' : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'}">
+            ${isOff ? '✓ Offline' : 'Make Offline'}
+          </button>
+        `;
+        row.addEventListener('click', async (e) => {
+          if (e.target.closest('[data-off-btn]')) return;
+          document.getElementById('bpDropboxModal')?.classList.add('hidden');
+          await openBlueprintDocument(docId, 1);
+        });
+        row.querySelector('[data-off-btn]')?.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          const meta = bpState.projectFiles.get(docId);
+          if (!meta) return;
+          try {
+            if (bpState.offlineSets.has(docId)) {
+              await removeDocAndOverlaysOffline(docId);
+            } else {
+              await saveDocAndOverlaysOffline(meta, true);
+            }
+          } catch (err) {
+            notify(err.message, 'error');
+          }
+          renderDropboxEntries();
+          renderOfflineModalList();
+          updateViewerHeaderBar();
+        });
+      }
+      container.appendChild(row);
+    });
+  }
+
+  function renderOfflineModalList() {
+    const modalList = document.getElementById('bpModalPanelOffline');
+    const docs = Array.from(bpState.offlineSets.values()).sort((a, b) =>
+      a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
+    );
+    const countEl = document.getElementById('bpModalOfflineCount');
+    if (countEl) countEl.textContent = String(docs.length);
+
+    if (!modalList) return;
+    if (docs.length === 0) {
+      modalList.innerHTML = `<div class="p-6 text-center text-xs text-slate-500">No blueprints saved offline on this device yet.</div>`;
+      return;
+    }
+
+    modalList.innerHTML = '';
+    docs.forEach((doc) => {
+      const row = document.createElement('div');
+      row.className = 'p-2.5 rounded-xl bg-white hover:bg-sky-50/60 border border-slate-200 flex items-center justify-between gap-2 cursor-pointer transition';
+      row.innerHTML = `
+        <div class="min-w-0 flex-1">
+          <div class="text-xs font-bold truncate text-slate-900">${escapeHtml(doc.name)}</div>
+          <div class="text-[10px] font-mono text-slate-500">Offline Ready • ${formatBytes(doc.size)}</div>
+        </div>
+        <button type="button" data-rm-off="1"
+          class="px-2 py-1 rounded-lg text-[10px] font-bold shrink-0 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200">
+          Remove
+        </button>
+      `;
+      row.addEventListener('click', async (e) => {
+        if (e.target.closest('[data-rm-off]')) return;
+        document.getElementById('bpDropboxModal')?.classList.add('hidden');
+        await openBlueprintDocument(doc.docId, 1);
+      });
+      row.querySelector('[data-rm-off]')?.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        await removeDocAndOverlaysOffline(doc.docId);
+        renderOfflineModalList();
+        renderDropboxEntries();
+        updateViewerHeaderBar();
+      });
+      modalList.appendChild(row);
+    });
+  }
+
+  function openDropboxModal() {
+    document.getElementById('bpDropboxModal')?.classList.remove('hidden');
+    const adminBtn = document.getElementById('bpOpenAdminSetupShortcutBtn');
+    if (adminBtn) adminBtn.classList.toggle('hidden', !isAdminUser());
+    updateConnectionBadges();
+    renderOfflineModalList();
+
+    const startPath = bpState.dbxPath || getDocFolderPath(bpState.activeDoc) || getLockedRoot();
+    loadDropboxFolder(startPath);
+  }
+
+  // -----------------------------------------------------------------------
+  // 10. CALLOUT LINK MODAL (CURRENT-FOLDER-FIRST PICKER, ROLE-GUARDED)
   // -----------------------------------------------------------------------
   function setModalBadgeColor(color) {
     bpState.selectedBadgeColor = color || 'blue';
@@ -1650,7 +2311,7 @@
     rootBtn?.classList.toggle('hidden', !canGoUp);
     resetBtn?.classList.toggle('hidden', !(activeDocFolder && clamped.toLowerCase() !== activeDocFolder.toLowerCase()));
 
-    if (!bpState.dropboxConnected || !isAppOnline()) {
+    if (!isAppOnline()) {
       const localMatches = Array.from(bpState.projectFiles.values()).filter((d) => {
         if (!d.dropboxPath) return true;
         return getDocFolderPath(d).toLowerCase() === clamped.toLowerCase();
@@ -1710,11 +2371,9 @@
     const items = (bpState.calloutPickerEntries || [])
       .filter((e) => e['.tag'] === 'folder' || (e['.tag'] === 'file' && e.name.toLowerCase().endsWith('.pdf')))
       .filter((e) => !q || e.name.toLowerCase().includes(q))
-      .sort((a, b) =>
-        a['.tag'] !== b['.tag']
-          ? a['.tag'] === 'folder' ? -1 : 1
-          : a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })
-      );
+      .sort((a, b) => (a['.tag'] !== b['.tag']
+        ? (a['.tag'] === 'folder' ? -1 : 1)
+        : a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' })));
 
     listEl.innerHTML = '';
     if (items.length === 0) {
@@ -1742,7 +2401,7 @@
           loadCalloutPickerFolder(entry.path_display || entry.path_lower);
         });
       } else {
-        const docId = entry.docId || `dbx_${entry.path_lower}`;
+        const docId = entry.docId || `dbx_${String(entry.path_lower || '').toLowerCase()}`;
         const isSelected = docId === bpState.selectedTargetKey;
         const isCurrent = bpState.activeDoc && docId === bpState.activeDoc.docId;
         const isOffline = bpState.offlineSets.has(docId);
@@ -1783,7 +2442,7 @@
     document.getElementById('bpTargetSearchInput').value = '';
     document.getElementById('bpSmartMatchBanner')?.classList.add('hidden');
     setModalBadgeColor('blue');
-    document.getElementById('bpCalloutModal')?.classList.remove('hidden');
+    document.getElementById('bpCalloutModal').classList.remove('hidden');
 
     loadCalloutPickerFolder(getDocFolderPath(bpState.activeDoc));
   }
@@ -1794,7 +2453,9 @@
     bpState.pendingRectNorm = { x: link.x, y: link.y, w: link.w || 0.018, h: link.h || 0.026 };
     bpState.selectedTargetKey = link.targetDocId;
     ensureDocMetaRegistered(link.targetDocId, link);
-    document.getElementById('bpCalloutModalTitle').textContent = 'Edit Callout Link';
+    document.getElementById('bpCalloutModalTitle').textContent = link.isAutoScanned
+      ? 'Edit Auto-Scanned Callout Link'
+      : 'Edit Callout Link';
     document.getElementById('bpDeleteCalloutBtn')?.classList.remove('hidden');
     const srcSub = document.getElementById('bpCalloutModalSourceSubtitle');
     if (srcSub && bpState.activeDoc) {
@@ -1806,7 +2467,7 @@
     document.getElementById('bpTargetSearchInput').value = '';
     document.getElementById('bpSmartMatchBanner')?.classList.add('hidden');
     setModalBadgeColor(link.color || 'blue');
-    document.getElementById('bpCalloutModal')?.classList.remove('hidden');
+    document.getElementById('bpCalloutModal').classList.remove('hidden');
 
     loadCalloutPickerFolder(getDocFolderPath(bpState.activeDoc));
   }
@@ -1823,13 +2484,12 @@
     const existing = bpState.calloutLinks.find((l) => l.id === linkId);
     bpState.calloutLinks = bpState.calloutLinks.filter((l) => l.id !== linkId);
     SafeStorage.setJSON('prodraw_callout_links', bpState.calloutLinks);
-
     if (existing && bpState.offlineSets.has(existing.sourceDocId)) {
       const remaining = bpState.calloutLinks.filter((l) => l.sourceDocId === existing.sourceDocId);
       await ProDrawOfflineDB.saveOverlays(existing.sourceDocId, remaining);
     }
     try {
-      await OverlayService.deleteLink(linkId);
+      await CalloutRepo.deleteLink(linkId);
     } catch (err) {
       notify(`Deleted locally (cloud sync pending): ${err.message}`, 'warning');
     }
@@ -1838,28 +2498,171 @@
   }
 
   // -----------------------------------------------------------------------
-  // 11. ADMIN DROPBOX SETUP PAGE HANDLERS
+  // 11. HEADER BAR, ROLE VISIBILITY & ACT LAYOUT MOUNTING
   // -----------------------------------------------------------------------
-  function setAdminSetupError(msg) {
-    const el = document.getElementById('bpAdminErrorBanner');
-    if (!el) return;
-    if (!msg) {
-      el.classList.add('hidden');
-      el.textContent = '';
+  function setAddLinkMode(enabled) {
+    bpState.addLinkMode = Boolean(enabled) && canEditCallouts();
+    const btn = document.getElementById('bpToggleAddLinkBtn');
+    const banner = document.getElementById('bpAddLinkBanner');
+    if (bpState.addLinkMode) {
+      btn?.classList.add('bg-amber-500', 'text-slate-950');
+      banner?.classList.remove('hidden');
     } else {
-      el.textContent = msg;
-      el.classList.remove('hidden');
+      btn?.classList.remove('bg-amber-500', 'text-slate-950');
+      banner?.classList.add('hidden');
     }
   }
 
-  async function refreshAdminSetupPage() {
-    setAdminSetupError('');
-    await DropboxProxy.refreshStatus();
-    if (bpState.pendingRedirectCode) {
-      const codeInp = document.getElementById('bpAdminDirectCodeInput');
-      if (codeInp && !codeInp.value) codeInp.value = bpState.pendingRedirectCode;
-      notify('Dropbox code received! Enter your Admin PIN and click Connect to finish.', 'info');
+  function updateViewerHeaderBar() {
+    const pillText = document.getElementById('bpActiveSheetPillText');
+    const sourceTag = document.getElementById('bpActiveSetSourceTag');
+    const stepper = document.getElementById('bpMultiPageStepperWrap');
+    const pageInd = document.getElementById('bpMultiPageIndicatorText');
+    const offPill = document.getElementById('bpOfflineBadgePill');
+    const backBtn = document.getElementById('bpBackHistoryPillBtn');
+    const backText = document.getElementById('bpBackHistoryPillText');
+    const addLinkBtn = document.getElementById('bpToggleAddLinkBtn');
+
+    // Role-based control visibility
+    if (addLinkBtn) {
+      addLinkBtn.classList.toggle('hidden', !canEditCallouts());
     }
+    if (!canEditCallouts() && bpState.addLinkMode) {
+      setAddLinkMode(false);
+    }
+    updateRescanButtonUI();
+
+    if (!bpState.activeDoc) {
+      if (pillText) pillText.textContent = 'Select Blueprint...';
+      if (sourceTag) sourceTag.textContent = 'PDF';
+      stepper?.classList.add('hidden');
+      offPill?.classList.add('hidden');
+    } else {
+      if (pillText) pillText.textContent = bpState.activeDoc.name;
+      if (sourceTag) sourceTag.textContent = bpState.activeDoc.source === 'dropbox' ? 'DBX' : 'PDF';
+      const total = bpState.activeDoc.numPages || 1;
+      if (total > 1) {
+        stepper?.classList.remove('hidden');
+        stepper?.classList.add('flex');
+        if (pageInd) pageInd.textContent = `${bpState.activePage}/${total}`;
+      } else {
+        stepper?.classList.add('hidden');
+      }
+
+      const isOff = bpState.offlineSets.has(bpState.activeDoc.docId);
+      if (offPill) {
+        offPill.classList.remove('hidden');
+        offPill.textContent = isOff ? 'ON' : 'OFF';
+        offPill.className = isOff
+          ? 'text-[10px] font-mono uppercase px-1.5 py-0.2 rounded bg-emerald-500/25 text-emerald-300 border border-emerald-500/50'
+          : 'text-[10px] font-mono uppercase px-1.5 py-0.2 rounded bg-slate-700 text-slate-300 border border-slate-600';
+      }
+    }
+
+    if (bpState.historyStack.length > 0) {
+      const prev = bpState.historyStack[bpState.historyStack.length - 1];
+      backBtn?.classList.remove('hidden');
+      backBtn?.classList.add('flex');
+      if (backText) backText.textContent = `← Back to ${prev.doc.name} (Pg ${prev.page})`;
+    } else {
+      backBtn?.classList.add('hidden');
+      backBtn?.classList.remove('flex');
+    }
+  }
+
+  function positionBlueprintsSection() {
+    const view = document.getElementById('viewBlueprints');
+    const actHeader = document.querySelector('body > header');
+    if (!view) return;
+    const topPx = actHeader ? Math.round(actHeader.getBoundingClientRect().height) : 53;
+    view.style.top = `${topPx}px`;
+  }
+
+  async function openBlueprintsView() {
+    await ensureInitialized();
+    bpState.isOpen = true;
+
+    // Hide other ACT sections cleanly
+    ['viewCrew', 'viewAdmin', 'viewOtherModule', 'viewPmPortal', 'roleWorkspaceQuickBar'].forEach((id) => {
+      document.getElementById(id)?.classList.add('hidden');
+    });
+
+    const view = document.getElementById('viewBlueprints');
+    positionBlueprintsSection();
+    view?.classList.remove('hidden');
+    document.body.classList.add('bp-viewer-open');
+
+    const titleEl = document.getElementById('topBarPageTitle');
+    if (titleEl) titleEl.textContent = 'Blueprints';
+
+    if (typeof closeSideMenu === 'function') closeSideMenu();
+
+    updateViewerHeaderBar();
+    updateConnectionBadges();
+
+    // Refresh cloud status & shared overlays in background
+    DropboxProxy.refreshStatus().catch(() => {});
+    if (getSupabase() && isAppOnline()) {
+      CalloutRepo.fetchAllLinks()
+        .then((allLinks) => {
+          if (Array.isArray(allLinks)) {
+            mergeLinksIntoState(allLinks);
+            renderCalloutOverlays();
+          }
+        })
+        .catch(() => {});
+    }
+
+    if (bpState.activeDoc) {
+      fitViewport('page');
+    }
+  }
+
+  function closeBlueprintsView() {
+    bpState.isOpen = false;
+    setAddLinkMode(false);
+    document.getElementById('viewBlueprints')?.classList.add('hidden');
+    document.getElementById('bpDropboxModal')?.classList.add('hidden');
+    document.getElementById('bpCalloutModal')?.classList.add('hidden');
+    document.body.classList.remove('bp-viewer-open');
+    clearTimeout(bpState.detailDebounceTimer);
+    if (bpState.activeBaseRenderTask) {
+      try { bpState.activeBaseRenderTask.cancel(); } catch {}
+    }
+  }
+
+  function openAdminDropboxSetupPage() {
+    if (!isAdminUser()) {
+      notify('Only Administrators can manage Dropbox connection setup.', 'warning');
+      return;
+    }
+    closeBlueprintsView();
+    document.getElementById('viewOtherModule')?.classList.add('hidden');
+    document.getElementById('viewCrew')?.classList.add('hidden');
+    document.getElementById('viewPmPortal')?.classList.add('hidden');
+    document.getElementById('viewAdmin')?.classList.remove('hidden');
+
+    // Hide all admin sub-pages and highlight our Admin Dropbox Setup page
+    document.querySelectorAll('[id^="adminPage_"]').forEach((el) => {
+      el.classList.toggle('hidden', el.id !== 'adminPage_dropbox_setup');
+    });
+    document.querySelectorAll('[id^="navAdmin_"]').forEach((btn) => {
+      const active = btn.id === 'navAdmin_dropbox_setup';
+      btn.className = active
+        ? 'w-full flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 transition'
+        : 'w-full flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition';
+    });
+
+    const titleEl = document.getElementById('topBarPageTitle');
+    if (titleEl) titleEl.textContent = 'Dropbox Blueprints Setup';
+
+    const codeInp = document.getElementById('bpAdminDirectCodeInput');
+    if (codeInp && bpState.pendingRedirectCode && !codeInp.value) {
+      codeInp.value = bpState.pendingRedirectCode;
+    }
+
+    if (typeof closeSideMenu === 'function') closeSideMenu();
+    ensureInitialized().then(() => DropboxProxy.refreshStatus());
   }
 
   function copyTextToClipboard(text, successMsg) {
@@ -1872,38 +2675,29 @@
       ta.select();
       document.execCommand('copy');
       ta.remove();
-      notify(successMsg || 'Copied!', 'success');
+      notify(successMsg, 'success');
     } catch {
-      notify('Copy failed—please copy manually.', 'warning');
+      notify('Unable to copy automatically.', 'warning');
     }
   }
 
   // -----------------------------------------------------------------------
-  // 12. EVENT BINDINGS & VIEWPORT LIFECYCLE
+  // 12. UI EVENT BINDINGS
   // -----------------------------------------------------------------------
-  function positionBlueprintsViewport() {
-    const viewEl = document.getElementById('viewBlueprints');
-    if (!viewEl) return;
-    const headerEl = document.querySelector('body > header');
-    const topPx = headerEl ? Math.ceil(headerEl.getBoundingClientRect().height) : 53;
-    viewEl.style.top = `${topPx}px`;
-  }
-
-  function bindAllEvents() {
-    // Viewer toolbar & Dropbox modal
-    document.getElementById('bpOpenDropboxModalBtn')?.addEventListener('click', () => openDropboxModal());
-    document.getElementById('bpActiveSheetPillBtn')?.addEventListener('click', () => openDropboxModal());
-    document.getElementById('bpEmptyOpenDropboxBtn')?.addEventListener('click', () => openDropboxModal());
+  function bindUIEvents() {
+    // Open / Close Dropbox Browser Modal
+    document.getElementById('bpOpenDropboxModalBtn')?.addEventListener('click', openDropboxModal);
+    document.getElementById('bpActiveSheetPillBtn')?.addEventListener('click', openDropboxModal);
+    document.getElementById('bpEmptyOpenDropboxBtn')?.addEventListener('click', openDropboxModal);
     document.getElementById('bpCloseDropboxModalBtn')?.addEventListener('click', () => {
       document.getElementById('bpDropboxModal')?.classList.add('hidden');
     });
     document.getElementById('bpOpenAdminSetupShortcutBtn')?.addEventListener('click', () => {
-      if (!isAdminUser()) return;
       document.getElementById('bpDropboxModal')?.classList.add('hidden');
-      if (typeof window.openAdminPage === 'function') window.openAdminPage('dropbox_setup');
+      openAdminDropboxSetupPage();
     });
 
-    // Dropbox Modal tabs
+    // Dropbox Modal Tabs
     document.getElementById('bpModalTabDropboxBtn')?.addEventListener('click', () => {
       document.getElementById('bpModalPanelOffline')?.classList.add('hidden');
       document.getElementById('bpModalPanelDropbox')?.classList.remove('hidden');
@@ -1922,7 +2716,7 @@
         'px-3 py-1.5 rounded-t-lg text-xs font-semibold text-slate-600 hover:text-slate-900';
     });
 
-    // Local PDF picker
+    // Local PDF Import
     document.getElementById('bpOpenLocalPdfPickerBtn')?.addEventListener('click', () => {
       document.getElementById('bpLocalPdfInput')?.click();
     });
@@ -1950,8 +2744,32 @@
       e.target.value = '';
     });
 
-    // Zoom, Page, Offline & History controls
-    document.getElementById('bpSaveOfflineBtn')?.addEventListener('click', toggleActiveDocOffline);
+    // Offline Toggle
+    document.getElementById('bpSaveOfflineBtn')?.addEventListener('click', async () => {
+      if (!bpState.activeDoc) {
+        notify('Open a blueprint first.', 'info');
+        return;
+      }
+      try {
+        if (bpState.offlineSets.has(bpState.activeDoc.docId)) {
+          await removeDocAndOverlaysOffline(bpState.activeDoc.docId);
+        } else {
+          await saveDocAndOverlaysOffline(bpState.activeDoc, true);
+        }
+      } catch (err) {
+        notify(err.message, 'error');
+      }
+      updateViewerHeaderBar();
+      renderOfflineModalList();
+      renderDropboxEntries();
+    });
+
+    // Admin-Only Manual Re-Scan Button
+    document.getElementById('bpRescanPageBtn')?.addEventListener('click', () => {
+      scanActivePageForCallouts({ isManualRescan: true });
+    });
+
+    // Zoom & Multi-Page Controls
     document.getElementById('bpZoomInBtn')?.addEventListener('click', () => {
       bpState.zoom = Math.min(bpState.maxZoom, bpState.zoom * 1.25);
       applyStageTransform();
@@ -1968,35 +2786,27 @@
       if (!bpState.activeDoc || bpState.activePage <= 1) return;
       bpState.activePage -= 1;
       await renderActivePageBase(true);
+      if (isAdminUser() && isAppOnline()) {
+        scanActivePageForCallouts({ isManualRescan: false }).catch(() => {});
+      }
     });
     document.getElementById('bpNextPageBtn')?.addEventListener('click', async () => {
       if (!bpState.activeDoc || bpState.activePage >= (bpState.activeDoc.numPages || 1)) return;
       bpState.activePage += 1;
       await renderActivePageBase(true);
+      if (isAdminUser() && isAppOnline()) {
+        scanActivePageForCallouts({ isManualRescan: false }).catch(() => {});
+      }
     });
 
+    // Add / Edit Callout Link Mode Toggle
     document.getElementById('bpToggleAddLinkBtn')?.addEventListener('click', () => {
-      if (!canEditCallouts()) {
-        notify('Only Admins, Project Managers, and Supervisors can add or edit callout links.', 'warning');
-        return;
-      }
-      bpState.addLinkMode = !bpState.addLinkMode;
-      const btn = document.getElementById('bpToggleAddLinkBtn');
-      const banner = document.getElementById('bpAddLinkBanner');
-      if (bpState.addLinkMode) {
-        btn?.classList.add('bg-amber-500', 'text-slate-950');
-        banner?.classList.remove('hidden');
-      } else {
-        btn?.classList.remove('bg-amber-500', 'text-slate-950');
-        banner?.classList.add('hidden');
-      }
+      if (!canEditCallouts()) return;
+      setAddLinkMode(!bpState.addLinkMode);
     });
-    document.getElementById('bpCancelAddLinkBannerBtn')?.addEventListener('click', () => {
-      bpState.addLinkMode = false;
-      document.getElementById('bpToggleAddLinkBtn')?.classList.remove('bg-amber-500', 'text-slate-950');
-      document.getElementById('bpAddLinkBanner')?.classList.add('hidden');
-    });
+    document.getElementById('bpCancelAddLinkBannerBtn')?.addEventListener('click', () => setAddLinkMode(false));
 
+    // Back Navigation History Pill
     document.getElementById('bpBackHistoryPillBtn')?.addEventListener('click', async () => {
       if (bpState.historyStack.length === 0) return;
       const prev = bpState.historyStack.pop();
@@ -2009,7 +2819,7 @@
       applyStageTransform();
     });
 
-    // Callout Modal Folder Navigation & Smart Label Match
+    // Callout Link Modal Folder Navigation
     document.getElementById('bpCalloutFolderUpBtn')?.addEventListener('click', () => {
       const inp = document.getElementById('bpTargetSearchInput');
       if (inp) inp.value = '';
@@ -2025,9 +2835,8 @@
       if (inp) inp.value = '';
       loadCalloutPickerFolder(getDocFolderPath(bpState.activeDoc));
     });
-    document.getElementById('bpTargetSearchInput')?.addEventListener('input', renderCalloutTargetCandidates);
-    document.getElementById('bpCalloutTargetPageInput')?.addEventListener('input', updateSelectedTargetSummary);
 
+    // Smart Auto-Match on Callout Label Input
     document.getElementById('bpCalloutLabelInput')?.addEventListener('input', (e) => {
       const val = String(e.target.value || '').trim();
       const banner = document.getElementById('bpSmartMatchBanner');
@@ -2041,14 +2850,12 @@
 
       const currentFolderPdfs = (bpState.calloutPickerEntries || [])
         .filter((entry) => entry['.tag'] === 'file' && entry.name.toLowerCase().endsWith('.pdf'))
-        .map((entry) => bpState.projectFiles.get(entry.docId || `dbx_${entry.path_lower}`))
+        .map((entry) => bpState.projectFiles.get(entry.docId || `dbx_${String(entry.path_lower || '').toLowerCase()}`))
         .filter(Boolean);
 
       const match =
         currentFolderPdfs.find((d) => normalizeSheetToken(d.name.replace(/\.pdf$/i, '')).includes(token)) ||
-        Array.from(bpState.projectFiles.values()).find((d) =>
-          normalizeSheetToken(d.name.replace(/\.pdf$/i, '')).includes(token)
-        );
+        Array.from(bpState.projectFiles.values()).find((d) => normalizeSheetToken(d.name.replace(/\.pdf$/i, '')).includes(token));
 
       if (match) {
         bpState.selectedTargetKey = match.docId;
@@ -2060,13 +2867,16 @@
       }
     });
 
+    document.getElementById('bpTargetSearchInput')?.addEventListener('input', renderCalloutTargetCandidates);
+    document.getElementById('bpCalloutTargetPageInput')?.addEventListener('input', updateSelectedTargetSummary);
     document.querySelectorAll('.bp-callout-color-choice').forEach((btn) => {
       btn.addEventListener('click', () => setModalBadgeColor(btn.getAttribute('data-badge-color')));
     });
+
     document.getElementById('bpCloseCalloutModalBtn')?.addEventListener('click', closeCalloutModal);
     document.getElementById('bpCancelCalloutModalBtn')?.addEventListener('click', closeCalloutModal);
     document.getElementById('bpDeleteCalloutBtn')?.addEventListener('click', async () => {
-      if (!bpState.editingCalloutId || !canEditCallouts()) return;
+      if (!bpState.editingCalloutId) return;
       const id = bpState.editingCalloutId;
       closeCalloutModal();
       await deleteCalloutLinkById(id);
@@ -2078,7 +2888,7 @@
       }
       const targetDoc = bpState.selectedTargetKey ? bpState.projectFiles.get(bpState.selectedTargetKey) : null;
       if (!targetDoc) {
-        notify('Please select a target PDF from the list first.', 'warning');
+        notify('Select a target PDF from the list first.', 'warning');
         return;
       }
 
@@ -2086,6 +2896,7 @@
       const label = document.getElementById('bpCalloutLabelInput')?.value.trim() || targetDoc.name.replace(/\.pdf$/i, '');
       const detailTitle = document.getElementById('bpCalloutDetailTitleInput')?.value.trim() || '';
 
+      // Manual creation or edit always marks isAutoScanned = false so future Re-Scans never overwrite user edits
       const linkObj = {
         id: bpState.editingCalloutId || `link_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         sourceDocId: bpState.activeDoc.docId,
@@ -2101,7 +2912,8 @@
         x: bpState.pendingRectNorm.x,
         y: bpState.pendingRectNorm.y,
         w: bpState.pendingRectNorm.w,
-        h: bpState.pendingRectNorm.h
+        h: bpState.pendingRectNorm.h,
+        isAutoScanned: false
       };
 
       bpState.calloutLinks = bpState.calloutLinks.filter((l) => l.id !== linkObj.id);
@@ -2113,9 +2925,9 @@
         await ProDrawOfflineDB.saveOverlays(bpState.activeDoc.docId, docLinks);
       }
 
-      let syncedToCloud = false;
+      let synced = false;
       try {
-        syncedToCloud = await OverlayService.upsertLink(linkObj);
+        synced = await CalloutRepo.upsertLink(linkObj);
       } catch (err) {
         notify(`Saved locally (cloud sync warning: ${err.message})`, 'warning');
       }
@@ -2123,51 +2935,65 @@
       renderCalloutOverlays();
       closeCalloutModal();
       notify(
-        syncedToCloud
-          ? `Shared callout to "${targetDoc.name}" saved!`
-          : `Callout link to "${targetDoc.name}" saved locally!`,
+        synced ? `Callout to "${targetDoc.name}" synced to Supabase!` : `Callout to "${targetDoc.name}" saved locally!`,
         'success'
       );
     });
 
     // Admin Dropbox Setup Page Events
+    const showAdminErr = (msg) => {
+      const el = document.getElementById('bpAdminErrorBanner');
+      if (!el) return;
+      if (!msg) {
+        el.classList.add('hidden');
+        el.textContent = '';
+      } else {
+        el.textContent = msg;
+        el.classList.remove('hidden');
+      }
+    };
+
     document.getElementById('bpAdminStartDirectAuthBtn')?.addEventListener('click', async () => {
-      setAdminSetupError('');
+      showAdminErr('');
       try {
         await DropboxProxy.startAdminDirectCodeFlow();
       } catch (err) {
-        setAdminSetupError(err.message);
+        showAdminErr(err.message);
       }
     });
+
     document.getElementById('bpAdminCompleteDirectBtn')?.addEventListener('click', async () => {
-      setAdminSetupError('');
+      showAdminErr('');
       const code = document.getElementById('bpAdminDirectCodeInput')?.value || '';
       const pin = document.getElementById('bpAdminVerifyPinInput')?.value || '';
-      const usedRedirect = SafeStorage.get('bp_dbx_used_redirect', '') === 'true';
+      const usedRedirect = Boolean(bpState.pendingRedirectCode && code.trim() === bpState.pendingRedirectCode.trim());
       try {
         await DropboxProxy.exchangeAdminCode(code, pin, usedRedirect);
         const codeInp = document.getElementById('bpAdminDirectCodeInput');
         const pinInp = document.getElementById('bpAdminVerifyPinInput');
         if (codeInp) codeInp.value = '';
         if (pinInp) pinInp.value = '';
-        notify('Dropbox connected & saved securely on server for all devices!', 'success');
+        notify('Dropbox connected & saved securely on server!', 'success');
       } catch (err) {
-        setAdminSetupError(err.message);
+        showAdminErr(err.message);
       }
     });
+
     document.getElementById('bpAdminCopyRedirectUriBtn')?.addEventListener('click', () => {
       copyTextToClipboard(DropboxProxy.getRedirectUri(), 'Redirect URI copied!');
     });
+
     document.getElementById('bpAdminStartRedirectBtn')?.addEventListener('click', async () => {
-      setAdminSetupError('');
+      showAdminErr('');
       try {
         await DropboxProxy.startAdminRedirectFlow();
       } catch (err) {
-        setAdminSetupError(err.message);
+        showAdminErr(err.message);
       }
     });
+
     document.getElementById('bpAdminDisconnectBtn')?.addEventListener('click', async () => {
-      setAdminSetupError('');
+      showAdminErr('');
       const pin = document.getElementById('bpAdminVerifyPinInput')?.value || '';
       try {
         await DropboxProxy.disconnectAdmin(pin);
@@ -2175,25 +3001,40 @@
         if (pinInp) pinInp.value = '';
         notify('Dropbox disconnected on server.', 'info');
       } catch (err) {
-        setAdminSetupError(err.message);
+        showAdminErr(err.message);
       }
+    });
+
+    document.getElementById('bpAdminAutoScanToggle')?.addEventListener('change', (e) => {
+      if (!isAdminUser()) return;
+      const enabled = Boolean(e.target.checked);
+      SafeStorage.set('bp_admin_autoscan_enabled', enabled ? 'true' : 'false');
+      notify(
+        enabled
+          ? 'First-open callout Auto-Scan enabled (Admin only).'
+          : 'First-open callout Auto-Scan paused. You can still use Re-Scan Links manually.',
+        'info'
+      );
     });
   }
 
-  async function initOnce() {
+  // -----------------------------------------------------------------------
+  // 13. INITIALIZATION & CLEAN ACT HOOK WRAPPERS
+  // -----------------------------------------------------------------------
+  async function ensureInitialized() {
     if (bpState.initialized) return;
     bpState.initialized = true;
-    bpState.calloutLinks = SafeStorage.getJSON('prodraw_callout_links', []);
 
-    DropboxProxy.captureRedirectCodeOnBoot();
+    bpState.calloutLinks = SafeStorage.getJSON('prodraw_callout_links', []);
     bindViewportInteractions();
-    bindAllEvents();
-    applyRolePermissionsUI();
+    bindUIEvents();
+    DropboxProxy.captureRedirectCodeOnBoot();
 
     const [offlineDocs, offlineOverlays] = await Promise.all([
       ProDrawOfflineDB.getAllDocuments(),
       ProDrawOfflineDB.getAllOverlays()
     ]);
+
     offlineDocs.forEach((d) => {
       d.isOffline = true;
       bpState.offlineSets.set(d.docId, d);
@@ -2205,196 +3046,114 @@
       }
     });
 
-    if (getSupabase() && isAppOnline()) {
-      OverlayService.fetchAllLinks()
-        .then((allLinks) => {
-          if (Array.isArray(allLinks)) {
-            mergeLinksIntoState(allLinks);
-            renderCalloutOverlays();
-          }
-        })
-        .catch(() => {});
-
-      DropboxProxy.refreshStatus().catch(() => {});
-    }
-
-    renderOfflineModalList();
+    updateConnectionBadges();
     updateViewerHeaderBar();
+    renderOfflineModalList();
   }
 
-  // -----------------------------------------------------------------------
-  // 13. ACT LIFECYCLE HOOKS (Zero edits needed in app-core.js or pm-hub-roles.js)
-  // -----------------------------------------------------------------------
-  function setBlueprintsMenuActive(active) {
-    const btn = document.getElementById('menuFeatBlueprints');
-    if (!btn) return;
-    btn.className = active
-      ? 'w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-bold bg-sky-500/15 text-sky-400 border border-sky-500/30 transition'
-      : 'w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition';
-  }
-
-  const ACTBlueprints = {
-    async open(initialFolderPath = null) {
-      await initOnce();
-      bpState.isOpen = true;
-      applyRolePermissionsUI();
-      setBlueprintsMenuActive(true);
-
-      document.getElementById('viewCrew')?.classList.add('hidden');
-      document.getElementById('viewAdmin')?.classList.add('hidden');
-      document.getElementById('viewOtherModule')?.classList.add('hidden');
-      document.getElementById('viewPmPortal')?.classList.add('hidden');
-
-      const titleEl = document.getElementById('topBarPageTitle');
-      if (titleEl) titleEl.textContent = 'Blueprints';
-
-      const viewEl = document.getElementById('viewBlueprints');
-      if (viewEl) {
-        positionBlueprintsViewport();
-        viewEl.classList.remove('hidden');
-      }
-      document.body.classList.add('bp-viewer-open');
-
-      if (typeof closeSideMenu === 'function') closeSideMenu();
-
-      // Refresh status & shared overlays when opening
-      if (isAppOnline()) {
-        DropboxProxy.refreshStatus().catch(() => {});
-        OverlayService.fetchAllLinks()
-          .then((links) => {
-            if (Array.isArray(links)) {
-              mergeLinksIntoState(links);
-              renderCalloutOverlays();
-            }
-          })
-          .catch(() => {});
-      }
-
-      if (initialFolderPath) {
-        openDropboxModal(initialFolderPath);
-      } else if (bpState.activeDoc) {
-        await renderActivePageBase(false);
-        applyStageTransform();
-      } else {
-        updateViewerHeaderBar();
-      }
-    },
-
-    onDeactivate() {
-      if (!bpState.isOpen) return;
-      bpState.isOpen = false;
-      bpState.addLinkMode = false;
-      clearTimeout(bpState.detailDebounceTimer);
-      if (bpState.activeBaseRenderTask) {
-        try { bpState.activeBaseRenderTask.cancel(); } catch {}
-        bpState.activeBaseRenderTask = null;
-      }
-      document.getElementById('bpToggleAddLinkBtn')?.classList.remove('bg-amber-500', 'text-slate-950');
-      document.getElementById('bpAddLinkBanner')?.classList.add('hidden');
-      document.getElementById('bpDropboxModal')?.classList.add('hidden');
-      document.getElementById('bpCalloutModal')?.classList.add('hidden');
-      document.getElementById('viewBlueprints')?.classList.add('hidden');
-      document.body.classList.remove('bp-viewer-open');
-      setBlueprintsMenuActive(false);
-    },
-
-    refreshPermissions() {
-      applyRolePermissionsUI();
-      updateConnectionBadges();
-    },
-
-    async openAdminSetup() {
-      if (!isAdminUser()) {
-        notify('Only Administrators can access Dropbox Setup.', 'warning');
+  function installActNavigationHooks() {
+    // 1. Wrap selectMenuFeature so Blueprints opens seamlessly and hides on any other feature
+    const prevSelectMenu = window.selectMenuFeature;
+    window.selectMenuFeature = function (featureKey) {
+      if (featureKey === 'blueprints') {
+        openBlueprintsView();
         return;
       }
-      await initOnce();
-      ACTBlueprints.onDeactivate();
-      document.getElementById('viewPmPortal')?.classList.add('hidden');
-      document.getElementById('viewOtherModule')?.classList.add('hidden');
-      document.getElementById('viewCrew')?.classList.add('hidden');
-      document.getElementById('viewAdmin')?.classList.remove('hidden');
-
-      const allPages = [
-        'reconcile', 'employees', 'jobs', 'statement_csv', 'batch_receipts',
-        'supabase_sage', 'ocr_key', 'export_csv', 'network', 'reset_data', 'dropbox_setup'
-      ];
-      allPages.forEach((k) => {
-        document.getElementById(`adminPage_${k}`)?.classList.toggle('hidden', k !== 'dropbox_setup');
-        const navBtn = document.getElementById(`navAdmin_${k}`);
-        if (navBtn) {
-          navBtn.className = k === 'dropbox_setup'
-            ? 'w-full flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-xl text-xs font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 transition'
-            : 'w-full flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition';
-        }
-      });
-
-      const titleEl = document.getElementById('topBarPageTitle');
-      if (titleEl) titleEl.textContent = 'Dropbox Blueprints Setup';
-      if (typeof closeSideMenu === 'function') closeSideMenu();
-      await refreshAdminSetupPage();
-    }
-  };
-
-  window.ACTBlueprints = ACTBlueprints;
-
-  // Wrap ACT navigation & role functions cleanly
-  const _origSelectMenuFeature = window.selectMenuFeature;
-  window.selectMenuFeature = function (featureKey) {
-    if (featureKey === 'blueprints') {
-      ACTBlueprints.open();
-      return;
-    }
-    ACTBlueprints.onDeactivate();
-    if (typeof _origSelectMenuFeature === 'function') {
-      _origSelectMenuFeature.apply(this, arguments);
-    }
-  };
-
-  const _origOpenAdminPage = window.openAdminPage;
-  window.openAdminPage = function (pageKey) {
-    if (pageKey === 'dropbox_setup') {
-      ACTBlueprints.openAdminSetup();
-      return;
-    }
-    ACTBlueprints.onDeactivate();
-    document.getElementById('adminPage_dropbox_setup')?.classList.add('hidden');
-    const navBtn = document.getElementById('navAdmin_dropbox_setup');
-    if (navBtn) {
-      navBtn.className = 'w-full flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition';
-    }
-    if (typeof _origOpenAdminPage === 'function') {
-      _origOpenAdminPage.apply(this, arguments);
-    }
-  };
-
-  const _origOpenMyPersonalCardView = window.openMyPersonalCardView;
-  if (typeof _origOpenMyPersonalCardView === 'function') {
-    window.openMyPersonalCardView = function () {
-      ACTBlueprints.onDeactivate();
-      return _origOpenMyPersonalCardView.apply(this, arguments);
+      closeBlueprintsView();
+      if (typeof prevSelectMenu === 'function') {
+        return prevSelectMenu.apply(this, arguments);
+      }
     };
+
+    // 2. Wrap openAdminPage to handle 'dropbox_setup' and close Blueprints on other admin pages
+    const prevOpenAdmin = window.openAdminPage;
+    window.openAdminPage = function (pageKey) {
+      if (pageKey === 'dropbox_setup') {
+        openAdminDropboxSetupPage();
+        return;
+      }
+      closeBlueprintsView();
+      document.getElementById('adminPage_dropbox_setup')?.classList.add('hidden');
+      const navBtn = document.getElementById('navAdmin_dropbox_setup');
+      if (navBtn) {
+        navBtn.className = 'w-full flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-300 hover:bg-slate-800 hover:text-white transition';
+      }
+      if (typeof prevOpenAdmin === 'function') {
+        return prevOpenAdmin.apply(this, arguments);
+      }
+    };
+
+    // 3. Wrap Personal Card & Logout so Blueprints closes cleanly
+    const prevPersonalCard = window.openMyPersonalCardView;
+    if (typeof prevPersonalCard === 'function') {
+      window.openMyPersonalCardView = function () {
+        closeBlueprintsView();
+        return prevPersonalCard.apply(this, arguments);
+      };
+    }
+
+    const prevLogout = window.logoutUser;
+    if (typeof prevLogout === 'function') {
+      window.logoutUser = function () {
+        closeBlueprintsView();
+        return prevLogout.apply(this, arguments);
+      };
+    }
+
+    // 4. Sync Blueprints role controls whenever ACT updates role visibility
+    const syncRoleControls = () => {
+      const bpBtn = document.getElementById('menuFeatBlueprints');
+      if (bpBtn) bpBtn.classList.remove('hidden');
+      updateViewerHeaderBar();
+      updateConnectionBadges();
+    };
+
+    const prevRefreshRole = window.refreshRoleUiVisibility;
+    if (typeof prevRefreshRole === 'function') {
+      window.refreshRoleUiVisibility = function () {
+        const res = prevRefreshRole.apply(this, arguments);
+        syncRoleControls();
+        return res;
+      };
+    }
+
+    const prevUpdateTopBar = window.updateTopBarIndicators;
+    if (typeof prevUpdateTopBar === 'function') {
+      window.updateTopBarIndicators = function () {
+        const res = prevUpdateTopBar.apply(this, arguments);
+        syncRoleControls();
+        return res;
+      };
+    }
+
+    syncRoleControls();
   }
 
-  const _origLogoutUser = window.logoutUser;
-  if (typeof _origLogoutUser === 'function') {
-    window.logoutUser = function () {
-      ACTBlueprints.onDeactivate();
-      return _origLogoutUser.apply(this, arguments);
-    };
-  }
+  // Expose safe public API for debugging and cross-module invocation
+  window.ACTBlueprints = {
+    open: openBlueprintsView,
+    close: closeBlueprintsView,
+    openAdminSetup: openAdminDropboxSetupPage,
+    rescanActivePage: () => scanActivePageForCallouts({ isManualRescan: true }),
+    refreshStatus: () => DropboxProxy.refreshStatus()
+  };
 
-  const _origRefreshRoleUiVisibility = window.refreshRoleUiVisibility;
-  if (typeof _origRefreshRoleUiVisibility === 'function') {
-    window.refreshRoleUiVisibility = function () {
-      const res = _origRefreshRoleUiVisibility.apply(this, arguments);
-      ACTBlueprints.refreshPermissions();
-      return res;
-    };
-  }
-
-  // Boot lazily after DOM is ready
-  window.addEventListener('load', () => {
-    initOnce().catch((err) => console.warn('ACTBlueprints init warning:', err));
+  window.addEventListener('online', () => {
+    updateConnectionBadges();
+    DropboxProxy.refreshStatus().catch(() => {});
   });
+  window.addEventListener('offline', () => {
+    updateConnectionBadges();
+  });
+
+  // Install navigation hooks immediately after all other ACT scripts load
+  installActNavigationHooks();
+  ensureInitialized()
+    .then(() => {
+      // Allow app-core.js a moment to finish initializing supabaseClient, then sync status badge
+      setTimeout(() => {
+        DropboxProxy.refreshStatus().catch(() => {});
+      }, 350);
+    })
+    .catch((err) => console.error('ACT Blueprints init error:', err));
 })();
