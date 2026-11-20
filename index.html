@@ -83,7 +83,7 @@
         <button onclick="closeSideMenu()" class="p-1.5 rounded-lg bg-slate-800 text-slate-400 hover:text-white text-xs font-bold">✕</button>
       </div>
 
-      <!-- Features / Modules List (Non-crew tabs hidden by default so Crew Members only see Receipts & Blueprints) -->
+      <!-- Features / Modules List -->
       <div class="space-y-1">
         <p class="px-2 text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1.5">Features</p>
         <button id="menuFeatReceipts" onclick="selectMenuFeature('receipts')" class="w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-bold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 transition">
@@ -240,9 +240,8 @@
   <!-- MAIN WORKSPACE -->
   <main class="max-w-5xl mx-auto px-3 pt-4 pb-8">
 
-   <!-- FIELD FORMS MODULE (CREW FILLER + ADMIN TEMPLATE MAPPER) -->
+    <!-- FIELD FORMS MODULE (CREW FILLER + ADMIN TEMPLATE MAPPER) -->
     <section id="viewOtherModule" class="hidden space-y-4">
-      <!-- Placeholder for future Time Cards / Payroll modules -->
       <div id="otherModulePlaceholderCard" class="hidden max-w-md mx-auto bg-slate-800 border border-slate-700 rounded-2xl p-6 text-center space-y-3">
         <div class="w-14 h-14 mx-auto overflow-hidden bg-transparent"><img src="ACT%20Master%20App%20Icon.png" alt="ACT" class="w-full h-full object-contain drop-shadow" /></div>
         <h2 id="otherModuleTitle" class="text-base font-bold text-white">Module</h2>
@@ -254,7 +253,6 @@
 
       <!-- ACTIVE FIELD FORMS WORKSPACE -->
       <div id="fieldFormsWorkspace" class="space-y-4">
-        <!-- Top Sub-Navigation (Admin gets "Manage / Upload Templates" button) -->
         <div class="flex flex-wrap items-center justify-between gap-2 bg-slate-800 border border-slate-700 rounded-2xl p-3.5">
           <div>
             <h1 class="text-sm font-bold text-white">Field Forms & PDF Signer</h1>
@@ -300,7 +298,6 @@
 
           <div id="fillerDynamicInputs" class="space-y-3.5"></div>
 
-          <!-- Email Destination Box -->
           <div class="p-3.5 rounded-xl bg-slate-900 border border-slate-700 space-y-2">
             <label class="block text-xs font-bold text-emerald-300">Email Completed PDF To:</label>
             <input type="email" id="fillerRecipientEmail" placeholder="recipient@company.com" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2.5 text-xs text-white font-mono focus:outline-none focus:border-emerald-500" />
@@ -319,7 +316,6 @@
 
         <!-- SUBVIEW 3: ADMIN PDF TEMPLATE UPLOADER & VISUAL/AI FIELD MAPPER -->
         <div id="formsSubView_admin_builder" class="hidden grid grid-cols-1 lg:grid-cols-12 gap-4">
-          <!-- Left Column: Template Settings & Mapped Fields List -->
           <div class="lg:col-span-5 bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-4 h-fit">
             <div class="flex items-center justify-between border-b border-slate-700 pb-2.5">
               <h2 class="text-sm font-bold text-white">1. Upload Blank PDF & Configure</h2>
@@ -343,7 +339,6 @@
               </div>
             </div>
 
-            <!-- AI Auto-Scan & Manual Add Controls -->
             <div class="border-t border-slate-700 pt-3 space-y-2.5">
               <div class="flex items-center justify-between">
                 <span class="text-xs font-bold text-emerald-400">2. Map Form Inputs</span>
@@ -357,7 +352,6 @@
               </button>
             </div>
 
-            <!-- Mapped Fields List -->
             <div id="adminMappedFieldsList" class="space-y-2 max-h-80 overflow-y-auto custom-scroll pr-1"></div>
 
             <button type="button" id="btnSaveFormTemplate" onclick="saveAdminPdfTemplate()" class="w-full py-3.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-lg transition">
@@ -365,7 +359,6 @@
             </button>
           </div>
 
-          <!-- Right Column: Interactive Zoomable & Draggable PDF Page Canvas -->
           <div class="lg:col-span-7 bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-3">
             <div class="flex flex-wrap items-center justify-between gap-2">
               <div>
@@ -374,12 +367,10 @@
               </div>
 
               <div class="flex items-center gap-1.5">
-                <!-- Zoom Controls -->
                 <button type="button" onclick="adjustBuilderZoom(-0.25)" class="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold border border-slate-700">−</button>
                 <span id="builderZoomIndicator" onclick="resetBuilderZoom()" class="cursor-pointer text-xs font-mono font-bold text-emerald-400 min-w-[46px] text-center" title="Click to reset zoom">100%</span>
                 <button type="button" onclick="adjustBuilderZoom(0.25)" class="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold border border-slate-700">+</button>
 
-                <!-- Page Controls -->
                 <span class="text-slate-600 px-1">|</span>
                 <button type="button" onclick="changeBuilderPdfPage(-1)" class="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-700 text-white text-xs font-bold border border-slate-700">◀</button>
                 <span id="builderPageIndicator" class="text-xs font-mono text-slate-300">P. 1/1</span>
@@ -400,7 +391,6 @@
 
     <!-- PROJECT MANAGER PORTAL (DOCUMENTS, RECEIPTS, HOURS LOGGED & PAYROLL) -->
     <section id="viewPmPortal" class="hidden space-y-4">
-      <!-- Top Header: Select Project Manager & Job Filter -->
       <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-3">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -428,7 +418,6 @@
           </div>
         </div>
 
-        <!-- KPI Summary Strip -->
         <div class="grid grid-cols-2 sm:grid-cols-4 gap-2.5 pt-1">
           <div class="p-3 rounded-xl bg-slate-900 border border-slate-800">
             <div class="text-[10px] font-bold uppercase text-slate-400">Project Docs</div>
@@ -448,7 +437,6 @@
           </div>
         </div>
 
-        <!-- 4 Sub-Tabs -->
         <div class="flex flex-wrap gap-1.5 pt-1 border-t border-slate-700">
           <button onclick="switchPmPortalTab('docs')" id="pmTabBtn_docs" class="px-3.5 py-2 rounded-xl text-xs font-bold bg-indigo-600 text-white">📄 Documents (PDFs)</button>
           <button onclick="switchPmPortalTab('receipts')" id="pmTabBtn_receipts" class="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 text-slate-300">🧾 Job Receipts</button>
@@ -457,7 +445,6 @@
         </div>
       </div>
 
-      <!-- Tab Content Container -->
       <div id="pmPortalTabBody" class="bg-slate-800 border border-slate-700 rounded-2xl p-4"></div>
     </section>
 
@@ -474,13 +461,11 @@
         </div>
       </div>
 
-      <!-- Missing Receipt Alert -->
       <div id="crewMissingAlert" class="hidden bg-red-950/80 border border-red-500/50 rounded-2xl p-3.5">
         <p class="text-xs font-bold text-red-300 uppercase">Missing Receipt Needed</p>
         <div id="crewMissingText" class="text-xs text-red-100 mt-1.5 space-y-1.5"></div>
       </div>
 
-      <!-- Receipt Capture Card -->
       <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-4">
         <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden" onchange="handleCrewSingleFile(event)" />
         <input type="file" id="singleFileInput" accept="image/*,application/pdf,.heic,.heif" class="hidden" onchange="handleCrewSingleFile(event)" />
@@ -502,7 +487,6 @@
           </button>
         </div>
 
-        <!-- Inspection & OCR Verification Box -->
         <div id="crewInspectionBox" class="hidden bg-slate-900 border border-slate-700 rounded-xl p-3 space-y-3">
           <div class="flex items-center justify-between gap-2">
             <span id="ocrStatusBadge" class="px-2.5 py-0.5 rounded text-[11px] font-bold bg-indigo-500/20 text-indigo-300 truncate">Scanning...</span>
@@ -532,7 +516,6 @@
         </div>
       </div>
 
-      <!-- Crew History List -->
       <div class="bg-slate-800 border border-slate-700 rounded-2xl p-4 space-y-2.5">
         <div class="flex items-center justify-between">
           <h2 class="text-xs font-bold uppercase tracking-wider text-slate-400">My Uploaded Receipts</h2>
@@ -658,7 +641,6 @@
             </button>
           </div>
 
-          <!-- Quick Sage CSV Import Bar -->
           <div class="p-3.5 rounded-xl bg-slate-900/90 border border-slate-700 space-y-2.5">
             <div class="flex items-center justify-between">
               <span class="text-xs font-bold text-indigo-300">Sage Accounting CSV Quick-Sync</span>
@@ -803,7 +785,7 @@
         <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 space-y-4">
           <div>
             <h2 class="text-base font-bold text-white">Gemini OCR API Key Setup</h2>
-            <p class="text-xs text-slate-400 mt-1">Configure and verify the Gemini API key used for receipt OCR scanning. Saved locally in browser storage.</p>
+            <p class="text-xs text-slate-400 mt-1">Configure and verify the Gemini API key used for receipt OCR and blueprint callout scanning. Saved to cloud & browser storage.</p>
           </div>
           <div class="p-3 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-between text-xs">
             <span class="text-slate-400">Current Status:</span>
@@ -877,7 +859,7 @@
         </div>
       </div>
 
-      <!-- PAGE 11: ADMIN DROPBOX BLUEPRINTS SETUP (SERVER PROXY + AUTO-SCAN CONTROLS) -->
+      <!-- PAGE 11: ADMIN DROPBOX BLUEPRINTS & AI CALLOUT SCANNER SETUP -->
       <div id="adminPage_dropbox_setup" class="hidden max-w-xl mx-auto space-y-4">
         <div class="bg-slate-800 border border-slate-700 rounded-2xl p-5 space-y-4">
           <div class="flex items-start justify-between gap-2">
@@ -946,17 +928,52 @@
             </div>
           </div>
 
-          <!-- Admin-Only Callout Auto-Scan Setting -->
-          <div class="p-3.5 rounded-xl bg-slate-900/90 border border-indigo-500/40 flex items-center justify-between gap-3">
-            <div class="min-w-0">
-              <div class="text-xs font-bold text-indigo-300">Auto-Scan Callout Links on First Open (Admin Only)</div>
-              <p class="text-[11px] text-slate-400 mt-0.5 leading-snug">
-                When an Admin opens an unscanned drawing page for the first time, automatically scan callouts (PDF text + Gemini OCR) and link them to matching PDFs in the same folder. Runs once per page across all devices.
-              </p>
+          <!-- Admin-Only Blueprint Callout Auto-Scan & High-Tier Gemini Model Settings -->
+          <div class="p-3.5 rounded-xl bg-slate-900/90 border border-indigo-500/40 space-y-3">
+            <div class="flex items-center justify-between gap-3">
+              <div>
+                <div class="text-xs font-bold text-indigo-300">Auto-Scan Callout Links on First Open (Admin Only)</div>
+                <p class="text-[11px] text-slate-400 mt-0.5 leading-snug">
+                  When an Admin opens an unscanned drawing for the first time, scans for callouts and links them to sibling PDFs in the same folder (runs once per page across all devices).
+                </p>
+              </div>
+              <label class="inline-flex items-center cursor-pointer shrink-0">
+                <input id="bpAdminAutoScanToggle" type="checkbox" checked class="w-4 h-4 accent-emerald-500 rounded cursor-pointer" />
+              </label>
             </div>
-            <label class="inline-flex items-center cursor-pointer shrink-0">
-              <input id="bpAdminAutoScanToggle" type="checkbox" checked class="w-4 h-4 accent-indigo-500 rounded cursor-pointer" />
-            </label>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5 pt-2 border-t border-slate-800">
+              <div>
+                <label for="bpAdminGeminiModelSelect" class="block text-[11px] font-bold text-slate-300 mb-1">
+                  Blueprint Callout Gemini Model
+                </label>
+                <select id="bpAdminGeminiModelSelect"
+                  class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white font-semibold focus:outline-none focus:border-indigo-500">
+                  <option value="auto">Auto (Gemini 4 Best Available)</option>
+                  <option value="gemini-4-neon">Gemini 4 Neon (Top Intelligence)</option>
+                  <option value="gemini-4-carbon">Gemini 4 Carbon (High Reasoning)</option>
+                  <option value="gemini-4-hydrogen">Gemini 4 Hydrogen (Fast &amp; Sharp)</option>
+                  <option value="gemini-4-argon">Gemini 4 Argon (Lightweight)</option>
+                  <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro (High-Precision)</option>
+                  <option value="gemini-3.8-flash">Gemini 3.8 Flash (Economy)</option>
+                </select>
+              </div>
+
+              <div>
+                <label for="bpAdminScanModeSelect" class="block text-[11px] font-bold text-slate-300 mb-1">
+                  Callout Detection Engine Mode
+                </label>
+                <select id="bpAdminScanModeSelect"
+                  class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-2 text-xs text-white font-semibold focus:outline-none focus:border-indigo-500">
+                  <option value="combined">Vector + Gemini Vision (Highest Accuracy)</option>
+                  <option value="hybrid">Vector First, Vision Fallback (Fastest)</option>
+                  <option value="vision_only">Gemini Vision Only (2×2 Tiled)</option>
+                </select>
+              </div>
+            </div>
+            <p class="text-[10px] text-slate-400">
+              Uses your existing Gemini API key from <strong>OCR API Key Setup</strong>. Receipt OCR remains on fast Flash models.
+            </p>
           </div>
 
           <div class="flex items-center justify-between gap-2 pt-2 border-t border-slate-700">
@@ -1035,7 +1052,7 @@
         </div>
       </div>
 
-      <!-- Right: Zoom, Admin Re-Scan, Add/Edit Callout Link (Role-Guarded), Offline Toggle, Dropbox Browser -->
+      <!-- Right: Zoom, Re-Scan Links (Admin Only), Add/Edit Callout Link (Role-Guarded), Offline Toggle, Dropbox Browser -->
       <div class="flex items-center justify-between lg:justify-end gap-1.5 w-full lg:w-auto overflow-x-auto">
         <div class="flex items-center bg-slate-800 border border-slate-700 rounded-lg p-0.5 shrink-0">
           <button id="bpZoomOutBtn" type="button" title="Zoom Out" class="p-1.5 rounded hover:bg-slate-700 text-slate-200 transition">
@@ -1049,14 +1066,12 @@
           <button id="bpZoomFitBtn" type="button" title="Fit Entire Sheet" class="px-2 py-1 rounded hover:bg-slate-700 text-[11px] font-semibold text-slate-200 transition">Fit</button>
         </div>
 
-        <button id="bpRescanPageBtn" type="button" title="Admin Only: Scan or re-scan this drawing page for callout links to other PDFs in the same folder"
-          class="hidden flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-700 hover:bg-indigo-600 text-white border border-indigo-500/60 transition shrink-0 disabled:opacity-50">
-          <svg class="w-3.5 h-3.5 text-indigo-200 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M3 7V5a2 2 0 0 1 2-2h2"></path>
-            <path d="M17 3h2a2 2 0 0 1 2 2v2"></path>
-            <path d="M21 17v2a2 2 0 0 1-2 2h-2"></path>
-            <path d="M7 21H5a2 2 0 0 1-2-2v-2"></path>
-            <line x1="7" y1="12" x2="17" y2="12"></line>
+        <!-- Admin-Only Re-Scan Callouts Button -->
+        <button id="bpRescanPageBtn" type="button" title="Re-scan this drawing page for callouts linking to sibling PDFs in the same folder (Admin only)"
+          class="hidden flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 border border-indigo-500/40 disabled:opacity-40 transition shrink-0">
+          <svg class="w-3.5 h-3.5 text-indigo-300" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 1 1-2.64-6.36"></path>
+            <polyline points="21 3 21 9 15 9"></polyline>
           </svg>
           <span id="bpRescanPageLabel">Re-Scan Links</span>
         </button>
@@ -1282,6 +1297,6 @@
   <script src="pm-hub-roles.js?v=4"></script>
   <script src="email-webhook.js?v=4"></script>
   <script src="branding.js?v=4"></script>
-  <script src="blueprints.js?v=6"></script>
+  <script src="blueprints.js?v=7"></script>
 </body>
 </html>
