@@ -3,13 +3,14 @@
 // Zero-conflict drop-in PDF blueprint & cross-sheet callout viewer
 // - All Dropbox calls route through Supabase Edge Function `dropbox-proxy`
 // - Shared callout overlays sync via `supabaseClient` (`blueprint_callout_links`)
-// - Admin-only first-open Auto-Scan & manual Re-Scan (PDF.js Vector + High-Tier
-//   Gemini 4 / 3.1 Pro Vision OCR) tracked cross-device in `blueprint_scanned_pages`
+// - First-open Auto-Scan runs for ALL roles (strictly once per page across all
+//   devices via `blueprint_scanned_pages`); manual Re-Scan & AI Model Settings
+//   are Admin-only and sync to all devices via `app_settings`
 // - Offline PDFs + overlay snapshots + linked target sheets cached in IndexedDB
 // - Role guards:
-//     Admin:      Dropbox setup, Auto-Scan/Re-Scan, Model Settings, Add/Edit/Delete links, View/Offline
-//     PM/Supv:    Add/Edit/Delete links, View/Offline
-//     Crew:       View/Offline only
+//     Admin:      Dropbox setup, Re-Scan Links, Model Settings, Add/Edit/Delete links, View/Offline
+//     PM/Supv:    Add/Edit/Delete links, View/Offline (triggers first-open Auto-Scan)
+//     Crew:       View/Offline only (triggers first-open Auto-Scan)
 // =========================================================================
 (function () {
   'use strict';
@@ -21,6 +22,7 @@
 
   const LINKS_TABLE = 'blueprint_callout_links';
   const SCANNED_PAGES_TABLE = 'blueprint_scanned_pages';
+  const SCANNER_SETTINGS_ROW_ID = 'blueprint_scanner_settings';
   const PROXY_FN = 'dropbox-proxy';
   const DEFAULT_LOCKED_ROOT = '/Current Jobs';
 
@@ -106,6 +108,60 @@
 
   function getBlueprintScanMode() {
     return SafeStorage.get('bp_admin_scan_mode', 'combined') || 'combined';
+  }
+
+  /**
+   * Pulls Admin-configured Blueprint AI scanner settings (model, mode, auto-scan toggle)
+   * from Supabase `app_settings` so Crew/PM/Supervisor devices automatically use the
+   * exact Gemini model (e.g. Gemini 4 Hydrogen) selected by the Admin.
+   */
+  async function loadScannerSettingsFromSupabase() {
+    const sb = getSupabase();
+    if (!sb || !isAppOnline()) return false;
+    try {
+      const { data, error } = await sb
+        .from('app_settings')
+        .select('ocr_api_key')
+        .eq('id', SCANNER_SETTINGS_ROW_ID)
+        .maybeSingle();
+      if (error || !data?.ocr_api_key) return false;
+      const cfg = JSON.parse(data.ocr_api_key);
+      if (typeof cfg.autoScanEnabled === 'boolean') {
+        SafeStorage.set('bp_admin_autoscan_enabled', cfg.autoScanEnabled ? 'true' : 'false');
+      }
+      if (typeof cfg.geminiModel === 'string' && cfg.geminiModel) {
+        SafeStorage.set('bp_admin_gemini_model', cfg.geminiModel);
+      }
+      if (typeof cfg.scanMode === 'string' && cfg.scanMode) {
+        SafeStorage.set('bp_admin_scan_mode', cfg.scanMode);
+      }
+      bpState.scannerSettingsLoaded = true;
+      updateConnectionBadges();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async function saveScannerSettingsToSupabase() {
+    if (!isAdminUser()) return false;
+    const sb = getSupabase();
+    if (!sb || !isAppOnline()) return false;
+    try {
+      const payload = {
+        autoScanEnabled: isAutoScanEnabled(),
+        geminiModel: getBlueprintModelPreference(),
+        scanMode: getBlueprintScanMode()
+      };
+      const { error } = await sb.from('app_settings').upsert({
+        id: SCANNER_SETTINGS_ROW_ID,
+        ocr_api_key: JSON.stringify(payload),
+        updated_at: new Date().toISOString()
+      });
+      return !error;
+    } catch {
+      return false;
+    }
   }
 
   function getAdminEmployeeId() {
@@ -365,13 +421,13 @@
     pdfProxies: new Map(),
     calloutLinks: [],
     historyStack: [],
-
-    // Auto-Scan & High-Tier Gemini Model Tracking (Admin-only)
+    // Auto-Scan & High-Tier Gemini Model Tracking
     scannedPagesCache: new Set(),
     inFlightScans: new Set(),
     isScanningNow: false,
     cachedBlueprintModel: null,
     availableGeminiModels: null,
+    scannerSettingsLoaded: false,
 
     stageW: 1500,
     stageH: 1000,
@@ -1538,16 +1594,23 @@ STRICT RULES:
   }
 
   /**
-   * Main Admin-only page callout scanner (triggered automatically on first-open or manually via Re-Scan).
+   * Main page callout scanner:
+   * - First-open Auto-Scan triggers for ALL user roles (strictly once per doc+page across all devices)
+   * - Manual Re-Scan is restricted strictly to Administrators
    */
   async function scanActivePageForCallouts({ isManualRescan = false } = {}) {
-    if (!isAdminUser()) {
-      if (isManualRescan) notify('Only Administrators can scan drawings for callout links.', 'warning');
+    if (isManualRescan && !isAdminUser()) {
+      notify('Only Administrators can manually re-scan drawings for callout links.', 'warning');
       return;
     }
     if (!bpState.activeDoc || !isAppOnline()) {
       if (isManualRescan) notify('Open a drawing while online to scan callout links.', 'warning');
       return;
+    }
+
+    // Ensure non-Admin devices have the Admin's chosen Gemini model & auto-scan settings before scanning
+    if (!bpState.scannerSettingsLoaded) {
+      await loadScannerSettingsFromSupabase();
     }
 
     const docMeta = bpState.activeDoc;
@@ -1841,8 +1904,8 @@ STRICT RULES:
       }
     }
 
-    // Admin-only first-open automatic callout scan (runs strictly once per doc+page across all devices)
-    if (openedOk && isAdminUser() && isAppOnline()) {
+    // First-open automatic callout scan for all roles (runs strictly once per doc+page across all devices)
+    if (openedOk && isAppOnline()) {
       scanActivePageForCallouts({ isManualRescan: false }).catch(() => {});
     }
   }
@@ -2794,6 +2857,7 @@ STRICT RULES:
     updateConnectionBadges();
 
     DropboxProxy.refreshStatus().catch(() => {});
+    loadScannerSettingsFromSupabase().catch(() => {});
     if (getSupabase() && isAppOnline()) {
       CalloutRepo.fetchAllLinks()
         .then((allLinks) => {
@@ -2853,7 +2917,12 @@ STRICT RULES:
     }
 
     if (typeof closeSideMenu === 'function') closeSideMenu();
-    ensureInitialized().then(() => DropboxProxy.refreshStatus());
+    ensureInitialized().then(() =>
+      Promise.all([
+        DropboxProxy.refreshStatus(),
+        loadScannerSettingsFromSupabase()
+      ])
+    );
   }
 
   function copyTextToClipboard(text, successMsg) {
@@ -2977,7 +3046,7 @@ STRICT RULES:
       if (!bpState.activeDoc || bpState.activePage <= 1) return;
       bpState.activePage -= 1;
       await renderActivePageBase(true);
-      if (isAdminUser() && isAppOnline()) {
+      if (isAppOnline()) {
         scanActivePageForCallouts({ isManualRescan: false }).catch(() => {});
       }
     });
@@ -2985,7 +3054,7 @@ STRICT RULES:
       if (!bpState.activeDoc || bpState.activePage >= (bpState.activeDoc.numPages || 1)) return;
       bpState.activePage += 1;
       await renderActivePageBase(true);
-      if (isAdminUser() && isAppOnline()) {
+      if (isAppOnline()) {
         scanActivePageForCallouts({ isManualRescan: false }).catch(() => {});
       }
     });
@@ -3189,37 +3258,37 @@ STRICT RULES:
         await DropboxProxy.disconnectAdmin(pin);
         const pinInp = document.getElementById('bpAdminVerifyPinInput');
         if (pinInp) pinInp.value = '';
-        notify('Dropbox disconnected on server.', 'info');
-      } catch (err) {
-        showAdminErr(err.message);
-      }
-    });
-
-    document.getElementById('bpAdminAutoScanToggle')?.addEventListener('change', (e) => {
+    document.getElementById('bpAdminAutoScanToggle')?.addEventListener('change', async (e) => {
       if (!isAdminUser()) return;
       const enabled = Boolean(e.target.checked);
       SafeStorage.set('bp_admin_autoscan_enabled', enabled ? 'true' : 'false');
+      const synced = await saveScannerSettingsToSupabase();
       notify(
         enabled
-          ? 'First-open callout Auto-Scan enabled (Admin only).'
-          : 'First-open callout Auto-Scan paused. You can still use Re-Scan Links manually.',
+          ? `First-open callout Auto-Scan enabled for all users${synced ? ' (synced to all devices)' : ''}.`
+          : `First-open callout Auto-Scan paused${synced ? ' (synced to all devices)' : ''}. Admins can still use Re-Scan Links manually.`,
         'info'
       );
     });
 
-    document.getElementById('bpAdminGeminiModelSelect')?.addEventListener('change', (e) => {
+    document.getElementById('bpAdminGeminiModelSelect')?.addEventListener('change', async (e) => {
       if (!isAdminUser()) return;
       const val = String(e.target.value || 'auto');
       SafeStorage.set('bp_admin_gemini_model', val);
       bpState.cachedBlueprintModel = null;
-      notify(`Blueprint Callout AI Model set to: ${val === 'auto' ? 'Auto (Gemini 4 Best Available)' : val}`, 'success');
+      const synced = await saveScannerSettingsToSupabase();
+      notify(
+        `Blueprint Callout AI Model set to: ${val === 'auto' ? 'Auto (Gemini 4 Best Available)' : val}${synced ? ' (synced to all devices)' : ''}`,
+        'success'
+      );
     });
 
-    document.getElementById('bpAdminScanModeSelect')?.addEventListener('change', (e) => {
+    document.getElementById('bpAdminScanModeSelect')?.addEventListener('change', async (e) => {
       if (!isAdminUser()) return;
       const val = String(e.target.value || 'combined');
       SafeStorage.set('bp_admin_scan_mode', val);
-      notify(`Blueprint Scan Engine Mode updated.`, 'info');
+      const synced = await saveScannerSettingsToSupabase();
+      notify(`Blueprint Scan Engine Mode updated${synced ? ' & synced to all devices' : ''}.`, 'info');
     });
   }
 
