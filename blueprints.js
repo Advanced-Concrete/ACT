@@ -3,11 +3,11 @@
 // Zero-conflict drop-in PDF blueprint & cross-sheet callout viewer
 // - All Dropbox calls route through Supabase Edge Function `dropbox-proxy`
 // - Shared callout overlays sync via `supabaseClient` (`blueprint_callout_links`)
-// - Admin-only first-open Auto-Scan & manual Re-Scan (PDF.js Vector + Gemini OCR)
-//   tracked cross-device in `blueprint_scanned_pages`
+// - Admin-only first-open Auto-Scan & manual Re-Scan (PDF.js Vector + High-Tier
+//   Gemini 4 / 3.1 Pro Vision OCR) tracked cross-device in `blueprint_scanned_pages`
 // - Offline PDFs + overlay snapshots + linked target sheets cached in IndexedDB
 // - Role guards:
-//     Admin:      Dropbox setup, Auto-Scan/Re-Scan, Add/Edit/Delete links, View/Offline
+//     Admin:      Dropbox setup, Auto-Scan/Re-Scan, Model Settings, Add/Edit/Delete links, View/Offline
 //     PM/Supv:    Add/Edit/Delete links, View/Offline
 //     Crew:       View/Offline only
 // =========================================================================
@@ -23,6 +23,43 @@
   const SCANNED_PAGES_TABLE = 'blueprint_scanned_pages';
   const PROXY_FN = 'dropbox-proxy';
   const DEFAULT_LOCKED_ROOT = '/Current Jobs';
+
+  // High-tier Gemini model fallback chain (used ONLY for blueprint callout scanning;
+  // ACT receipt OCR in app-core.js remains untouched on fast Flash models)
+  const BLUEPRINT_GEMINI_MODEL_CHAIN = [
+    'gemini-4-neon',
+    'gemini-4-carbon',
+    'gemini-4-hydrogen',
+    'gemini-4-argon',
+    'gemini-3.1-pro-preview',
+    'gemini-2.5-pro',
+    'gemini-3.8-flash',
+    'gemini-2.5-flash'
+  ];
+
+  // Official Structured Outputs schema for rock-solid JSON on Gemini 4 & 3.1 Pro
+  const CALLOUT_RESPONSE_SCHEMA = {
+    type: 'OBJECT',
+    properties: {
+      callouts: {
+        type: 'ARRAY',
+        items: {
+          type: 'OBJECT',
+          properties: {
+            label: { type: 'STRING' },
+            target_filename: { type: 'STRING' },
+            detail_title: { type: 'STRING' },
+            box_2d: {
+              type: 'ARRAY',
+              items: { type: 'INTEGER' }
+            }
+          },
+          required: ['label', 'target_filename', 'box_2d']
+        }
+      }
+    },
+    required: ['callouts']
+  };
 
   // Non-sheet tokens to ignore during automatic sheet-number extraction
   const IGNORED_SHEET_TOKENS = new Set([
@@ -61,6 +98,14 @@
 
   function isAutoScanEnabled() {
     return SafeStorage.get('bp_admin_autoscan_enabled', 'true') !== 'false';
+  }
+
+  function getBlueprintModelPreference() {
+    return SafeStorage.get('bp_admin_gemini_model', 'auto') || 'auto';
+  }
+
+  function getBlueprintScanMode() {
+    return SafeStorage.get('bp_admin_scan_mode', 'combined') || 'combined';
   }
 
   function getAdminEmployeeId() {
@@ -321,10 +366,12 @@
     calloutLinks: [],
     historyStack: [],
 
-    // Auto-Scan tracking (Admin-only)
+    // Auto-Scan & High-Tier Gemini Model Tracking (Admin-only)
     scannedPagesCache: new Set(),
     inFlightScans: new Set(),
     isScanningNow: false,
+    cachedBlueprintModel: null,
+    availableGeminiModels: null,
 
     stageW: 1500,
     stageH: 1000,
@@ -783,7 +830,6 @@
         .maybeSingle();
 
       if (error) {
-        // If table doesn't exist yet or transient error, skip auto-scan safely
         return true;
       }
       if (data) {
@@ -927,8 +973,149 @@
   }
 
   // -----------------------------------------------------------------------
-  // 7. ADMIN-ONLY HYBRID CALLOUT AUTO-SCANNER (PDF.js VECTOR + GEMINI OCR)
+  // 7. DEDICATED HIGH-TIER GEMINI 4 / 3.1 PRO CALLOUT SCANNER (ADMIN-ONLY)
   // -----------------------------------------------------------------------
+
+  /**
+   * Queries /v1beta/models once per session to see which Gemini models are
+   * actually enabled for the configured API key, avoiding wasted 404 retries.
+   */
+  async function discoverAvailableBlueprintModels(key) {
+    if (Array.isArray(bpState.availableGeminiModels)) {
+      return bpState.availableGeminiModels;
+    }
+    try {
+      const resp = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`
+      );
+      if (!resp.ok) return null;
+      const data = await resp.json();
+      const liveNames = (data.models || [])
+        .filter((m) => Array.isArray(m.supportedGenerationMethods) && m.supportedGenerationMethods.includes('generateContent'))
+        .map((m) => String(m.name || '').replace(/^models\//, ''))
+        .filter(Boolean);
+
+      if (liveNames.length > 0) {
+        bpState.availableGeminiModels = liveNames;
+        return liveNames;
+      }
+    } catch {}
+    return null;
+  }
+
+  /**
+   * Dedicated Gemini Vision API caller exclusively for blueprint callout scanning.
+   * - Targets Gemini 4 (Neon → Carbon → Hydrogen → Argon), Gemini 3.1 Pro, and 2.5 Pro
+   * - Leaves ACT receipt OCR (app-core.js) completely untouched on fast Flash models
+   * - Uses Structured Outputs responseSchema + 45s timeout + smart 400 retry without thinkingConfig
+   */
+  async function callGeminiForBlueprints(contents) {
+    const key = typeof getCleanApiKey === 'function' ? getCleanApiKey() : '';
+    if (!key) {
+      return {
+        ok: false,
+        errorReason: 'No Gemini API Key configured (Admin → OCR API Key Setup).'
+      };
+    }
+
+    const pref = getBlueprintModelPreference();
+    let candidates =
+      pref && pref !== 'auto'
+        ? [pref, ...BLUEPRINT_GEMINI_MODEL_CHAIN.filter((m) => m !== pref)]
+        : [...BLUEPRINT_GEMINI_MODEL_CHAIN];
+
+    // Filter against live models enabled for this key (while always honoring an explicit user choice)
+    const liveModels = await discoverAvailableBlueprintModels(key);
+    if (Array.isArray(liveModels) && liveModels.length > 0) {
+      const liveSet = new Set(liveModels);
+      const filteredChain = candidates.filter((m) => liveSet.has(m) || (pref !== 'auto' && m === pref));
+      const extraProModels = liveModels.filter(
+        (m) => /gemini-(4|3\.1|3|2\.5)-(neon|carbon|hydrogen|argon|pro)/i.test(m) && !filteredChain.includes(m)
+      );
+      const extraFlashModels = liveModels.filter(
+        (m) => /gemini-(3\.8|3|2\.5)-flash/i.test(m) && !filteredChain.includes(m)
+      );
+      const merged = [...filteredChain, ...extraProModels, ...extraFlashModels];
+      if (merged.length > 0) {
+        candidates = merged;
+      }
+    }
+
+    if (bpState.cachedBlueprintModel && candidates.includes(bpState.cachedBlueprintModel)) {
+      candidates = [
+        bpState.cachedBlueprintModel,
+        ...candidates.filter((m) => m !== bpState.cachedBlueprintModel)
+      ];
+    }
+
+    const errors = [];
+
+    const postModel = async (modelName, includeThinking) => {
+      const isGemini4 = /^gemini-4-/i.test(modelName);
+      const generationConfig = {
+        responseMimeType: 'application/json',
+        responseSchema: CALLOUT_RESPONSE_SCHEMA,
+        maxOutputTokens: 16384
+      };
+
+      // Gemini 4 accepts thinkingLevel ('low'|'medium'|'high') and ignores temperature/topP/topK
+      if (isGemini4 && includeThinking) {
+        generationConfig.thinkingConfig = { thinkingLevel: 'medium' };
+      }
+
+      const payload = { contents, generationConfig };
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(modelName)}:generateContent?key=${encodeURIComponent(key)}`;
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 45000);
+
+      try {
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: controller.signal
+        });
+        clearTimeout(timer);
+        const data = await resp.json().catch(() => ({}));
+        return { resp, data };
+      } catch (fetchErr) {
+        clearTimeout(timer);
+        throw fetchErr;
+      }
+    };
+
+    for (const modelName of candidates) {
+      try {
+        let { resp, data } = await postModel(modelName, true);
+
+        // If a model rejects thinkingConfig with HTTP 400, retry the same model once cleanly without it
+        if (!resp.ok && resp.status === 400 && /thinking/i.test(String(data?.error?.message || ''))) {
+          ({ resp, data } = await postModel(modelName, false));
+        }
+
+        if (resp.ok && data?.candidates?.length) {
+          bpState.cachedBlueprintModel = modelName;
+          return { ok: true, data, modelUsed: modelName };
+        }
+
+        const errMsg = data?.error?.message || `HTTP ${resp.status}`;
+        errors.push(`${modelName}: ${errMsg}`);
+
+        if (bpState.cachedBlueprintModel === modelName) {
+          bpState.cachedBlueprintModel = null;
+        }
+      } catch (fetchErr) {
+        const msg = fetchErr.name === 'AbortError' ? 'Timed out (45s)' : (fetchErr.message || 'Network error');
+        errors.push(`${modelName}: ${msg}`);
+        if (bpState.cachedBlueprintModel === modelName) {
+          bpState.cachedBlueprintModel = null;
+        }
+      }
+    }
+
+    return { ok: false, errorReason: errors.slice(0, 3).join(' | ') };
+  }
 
   /**
    * Extracts normalized construction sheet identifiers from a PDF filename
@@ -938,29 +1125,24 @@
     const base = String(filename || '').replace(/\.pdf$/i, '').trim();
     const codes = new Set();
 
-    // Architectural / Structural / Civil / MEP sheet pattern: 1-3 letters + optional sep + digits + optional decimal/dash
     const sheetRegex = /(?:^|[^A-Z0-9])([A-Z]{1,3}[-.\s]?\d{1,3}(?:[.\-]\d{1,3})?[A-Z]?)(?=$|[^A-Z0-9])/gi;
     let m;
     while ((m = sheetRegex.exec(base)) !== null) {
       const canon = canonicalSheetCode(m[1]);
       if (canon.length >= 2 && /[A-Z]/.test(canon) && /\d/.test(canon) && !IGNORED_SHEET_TOKENS.has(canon)) {
         codes.add(canon);
-        // Also support trailing ".0" / ".00" equivalence only if the filename explicitly has a dot
         if (/\.\d+$/.test(canon)) {
-          const trimmedZero = canon.replace(/\.0+$/, '.0');
-          codes.add(trimmedZero);
+          codes.add(canon.replace(/\.0+$/, '.0'));
         }
       }
     }
 
-    // Fallback: leading token before space/dash/underscore (e.g. "S1.01_Details" or "101_Plan")
     const leadToken = base.split(/[\s_]+|\s+-\s+/)[0] || '';
     const leadCanon = canonicalSheetCode(leadToken);
     if (leadCanon.length >= 2 && !IGNORED_SHEET_TOKENS.has(leadCanon)) {
       if (/[A-Z]/.test(leadCanon) && /\d/.test(leadCanon)) {
         codes.add(leadCanon);
       } else if (/^\d{2,4}(?:\.\d+)?$/.test(leadCanon)) {
-        // Purely numeric sheet code — kept with prefix marker so it only matches explicit `detail/sheet` callouts
         codes.add(`NUM:${leadCanon}`);
       }
     }
@@ -1017,15 +1199,11 @@
   }
 
   function isLikelyTitleBlockPosition(x, y) {
-    // Bottom-right title block & extreme right border strip
     if (x > 0.80 && y > 0.80) return true;
     if (x > 0.92) return true;
     return false;
   }
 
-  /**
-   * Pads and clamps a raw normalized box so hotspots remain crisp and easy to tap.
-   */
   function normalizeHotspotBox(x, y, w, h) {
     const MIN_W = 0.016;
     const MIN_H = 0.022;
@@ -1050,20 +1228,14 @@
     const dist = (a, b) => Math.hypot((a.x + a.w / 2) - (b.x + b.w / 2), (a.y + a.h / 2) - (b.y + b.h / 2));
 
     for (const c of candidates) {
-      // Never overlap an existing manual link
       const hitsManual = existingManualLinks.some((m) => dist(c, m) < 0.024);
       if (hitsManual) continue;
 
-      // Deduplicate nearby detections pointing to the same target sheet
-      const dup = accepted.find((a) => a.targetDoc.docId === c.targetDoc.docId && dist(a, c) < 0.028);
+      const dup = accepted.find((a) => a.targetDoc.docId === c.targetDoc.docId && dist(a, c) < 0.032);
       if (dup) {
-        // Keep the one with a richer label (e.g. "3/S2.0" over "S2.0")
         if (c.label.includes('/') && !dup.label.includes('/')) {
           dup.label = c.label;
-          dup.x = c.x;
-          dup.y = c.y;
-          dup.w = c.w;
-          dup.h = c.h;
+          if (c.detailTitle && !dup.detailTitle) dup.detailTitle = c.detailTitle;
         }
         continue;
       }
@@ -1074,7 +1246,6 @@
 
   /**
    * PASS 1: Fast, pixel-accurate PDF.js native vector text extraction.
-   * Detects both inline ("3/S2.0", "S2.0") and stacked CAD callout bubbles (detail # directly above sheet #).
    */
   async function scanPageVectorText(page, siblingIndex) {
     const unscaled = page.getViewport({ scale: 1 });
@@ -1124,7 +1295,6 @@
       const it = items[i];
       let matchedInline = false;
 
-      // 1A. Explicit inline callouts like "3/S2.0" or "A / S2.1"
       inlineFractionRe.lastIndex = 0;
       let fm;
       while ((fm = inlineFractionRe.exec(it.str)) !== null) {
@@ -1144,7 +1314,6 @@
       }
       if (matchedInline) continue;
 
-      // 1B. Standalone sheet code (or bottom half of a stacked CAD callout bubble)
       if (isLikelyTitleBlockPosition(it.x, it.y)) continue;
 
       standaloneSheetRe.lastIndex = 0;
@@ -1154,14 +1323,13 @@
         const targetDoc = resolveSheetCodeToSibling(sheetRaw, siblingIndex, false);
         if (!targetDoc) continue;
 
-        // Check for a detail number directly above this sheet code (stacked callout bubble)
         let detailAbove = null;
         for (let j = 0; j < items.length; j++) {
           if (i === j) continue;
           const cand = items[j];
           if (!/^[A-Z0-9]{1,3}$/i.test(cand.str)) continue;
           const dx = Math.abs(cand.cx - it.cx);
-          const dy = it.cy - cand.cy; // positive means cand is above it
+          const dy = it.cy - cand.cy;
           const maxDx = Math.max(it.w * 0.9, 0.015);
           const maxDy = Math.max(it.h * 3.2, 0.025);
           if (dx <= maxDx && dy > 0.002 && dy <= maxDy) {
@@ -1200,27 +1368,27 @@
   }
 
   /**
-   * PASS 2: 2×2 Tiled Gemini Vision OCR fallback for scanned/raster PDFs or stroked CAD fonts.
-   * Uses ACT's existing `callGeminiWithFallback()` and cloud-synced Gemini OCR API key.
+   * PASS 2: 2×2 Tiled High-Tier Gemini 4 / 3.1 Pro Vision OCR pass.
    */
   async function scanPageGeminiVisionTiled(page, siblingIndex, onProgress) {
-    if (typeof callGeminiWithFallback !== 'function') {
-      return { ok: false, reason: 'ACT Gemini OCR engine is not available.', detections: [] };
-    }
     if (typeof getCleanApiKey === 'function' && !getCleanApiKey()) {
-      return { ok: false, reason: 'Gemini OCR API key not configured (Admin → OCR API Key Setup).', detections: [] };
+      return {
+        ok: false,
+        reason: 'Gemini OCR API key not configured (Admin → OCR API Key Setup).',
+        detections: [],
+        modelUsed: ''
+      };
     }
 
-    // Build compact valid target list so Gemini strictly matches existing sibling PDFs
     const siblingCatalog = siblingIndex.siblingDocs.map((doc) => ({
       filename: doc.name,
       codes: extractSheetCodesFromFilename(doc.name).map((c) => c.replace(/^NUM:/, ''))
     }));
 
-    // Render full page at crisp resolution for 2×2 slicing
+    // Render full page at crisp high resolution for 2×2 tiled inspection
     const unscaled = page.getViewport({ scale: 1 });
-    const maxDim = 2600;
-    const renderScale = Math.min(2.4, maxDim / Math.max(unscaled.width, unscaled.height));
+    const maxDim = 2800;
+    const renderScale = Math.min(2.5, maxDim / Math.max(unscaled.width, unscaled.height));
     const vp = page.getViewport({ scale: Math.max(1, renderScale) });
 
     const fullCanvas = document.createElement('canvas');
@@ -1242,31 +1410,23 @@
       .map((s) => `- "${s.filename}" (sheet codes: ${s.codes.join(', ') || 'filename match'})`)
       .join('\n');
 
-    const promptText = `You are a construction blueprint callout detector.
-Inspect this section of an architectural/structural blueprint and find EVERY detail callout bubble, section cut marker, elevation marker, or sheet reference note that points to one of the sibling PDF drawings listed below.
+    const promptText = `You are an expert construction blueprint callout detector inspecting a quadrant of an architectural, structural, or civil drawing.
+Locate EVERY detail callout bubble, section cut bubble, elevation marker, enlarged plan callout, or sheet reference note (e.g. "3/S2.0", stacked circle with "3" over "S2.0", "SEE SHEET S2.1") that points to one of the sibling PDF drawings in the same folder listed below.
 
-VALID TARGET DRAWINGS IN THIS FOLDER (ONLY return callouts that match one of these):
+VALID TARGET DRAWINGS IN THIS FOLDER (ONLY return callouts that match one of these exact filenames):
 ${catalogText}
 
 STRICT RULES:
-1. Ignore the drawing's own title block, revision table, and general sheet index lists.
-2. Only return callouts whose referenced sheet number matches one of the valid target drawings listed above.
-3. For each callout, provide its tight bounding box [ymin, xmin, ymax, xmax] scaled 0 to 1000 relative to THIS image crop.
-4. Return ONLY valid JSON in this exact format (return {"callouts": []} if none are found):
-{
-  "callouts": [
-    {
-      "label": "3/S2.0",
-      "target_filename": "exact filename from the list above",
-      "detail_title": "short description if nearby or empty string",
-      "box_2d": [ymin, xmin, ymax, xmax]
-    }
-  ]
-}`;
+1. Ignore the drawing's own title block, revision table, and general sheet index tables.
+2. Only return callouts whose referenced sheet number matches one of the valid target drawings listed above. Do NOT invent filenames.
+3. For each callout, provide a tight bounding box [ymin, xmin, ymax, xmax] scaled 0 to 1000 relative to THIS image crop, centered directly on the callout bubble or reference text.
+4. Keep detail_title short (e.g., "Wall Footing Section") or empty string if none is printed nearby.
+5. Return ONLY JSON matching the response schema (empty "callouts" array if none are present in this quadrant).`;
 
     const detections = [];
     let completedTiles = 0;
     let succeededTiles = 0;
+    let modelUsed = '';
     let lastErrorReason = '';
 
     const scanSingleTile = async (tile) => {
@@ -1279,31 +1439,26 @@ STRICT RULES:
       tileCanvas.width = sw;
       tileCanvas.height = sh;
       tileCanvas.getContext('2d', { alpha: false }).drawImage(fullCanvas, sx, sy, sw, sh, 0, 0, sw, sh);
-      const b64 = tileCanvas.toDataURL('image/jpeg', 0.84).split(',')[1];
+      const b64 = tileCanvas.toDataURL('image/jpeg', 0.86).split(',')[1];
 
-      const res = await callGeminiWithFallback({
-        contents: [
-          {
-            role: 'user',
-            parts: [
-              { text: promptText },
-              { inlineData: { mimeType: 'image/jpeg', data: b64 } }
-            ]
-          }
-        ],
-        generationConfig: {
-          temperature: 0,
-          responseMimeType: 'application/json'
+      const res = await callGeminiForBlueprints([
+        {
+          role: 'user',
+          parts: [
+            { text: promptText },
+            { inlineData: { mimeType: 'image/jpeg', data: b64 } }
+          ]
         }
-      });
+      ]);
 
       completedTiles += 1;
+      if (res.ok && res.modelUsed) modelUsed = res.modelUsed;
       if (typeof onProgress === 'function') {
-        onProgress(completedTiles, tiles.length);
+        onProgress(completedTiles, tiles.length, modelUsed);
       }
 
       if (!res.ok) {
-        lastErrorReason = res.errorReason || 'Gemini OCR request failed.';
+        lastErrorReason = res.errorReason || 'Gemini Vision scan failed.';
         return;
       }
       succeededTiles += 1;
@@ -1323,10 +1478,13 @@ STRICT RULES:
       const callouts = Array.isArray(parsed?.callouts) ? parsed.callouts : [];
       for (const c of callouts) {
         if (!Array.isArray(c.box_2d) || c.box_2d.length !== 4) continue;
-        const [ymin, xmin, ymax, xmax] = c.box_2d.map(Number);
-        if ([ymin, xmin, ymax, xmax].some((n) => isNaN(n))) continue;
+        const [rawY1, rawX1, rawY2, rawX2] = c.box_2d.map(Number);
+        if ([rawY1, rawX1, rawY2, rawX2].some((n) => isNaN(n))) continue;
+        const ymin = Math.min(rawY1, rawY2);
+        const ymax = Math.max(rawY1, rawY2);
+        const xmin = Math.min(rawX1, rawX2);
+        const xmax = Math.max(rawX1, rawX2);
 
-        // Resolve target sibling strictly from the folder catalog
         const fnameLower = String(c.target_filename || '').trim().toLowerCase();
         let targetDoc =
           siblingIndex.filenameToDoc.get(fnameLower) ||
@@ -1338,7 +1496,6 @@ STRICT RULES:
         }
         if (!targetDoc) continue;
 
-        // Convert tile 0..1000 coords back to full-page 0..1 coords
         const tileW = tile.x1 - tile.x0;
         const tileH = tile.y1 - tile.y0;
         const gx = tile.x0 + (Math.max(0, Math.min(1000, xmin)) / 1000) * tileW;
@@ -1352,21 +1509,32 @@ STRICT RULES:
         detections.push({
           ...box,
           label: String(c.label || targetDoc.name.replace(/\.pdf$/i, '')).trim(),
-          detailTitle: String(c.detail_title || 'Auto-scanned callout').trim(),
+          detailTitle: String(c.detail_title || 'AI callout').trim(),
           targetDoc
         });
       }
     };
 
-    // Run 2 tiles in parallel at a time to stay fast while avoiding API rate spikes
-    await Promise.all([scanSingleTile(tiles[0]), scanSingleTile(tiles[1])]);
-    await Promise.all([scanSingleTile(tiles[2]), scanSingleTile(tiles[3])]);
-
-    if (succeededTiles === 0) {
-      return { ok: false, reason: lastErrorReason || 'Gemini OCR scan failed.', detections: [] };
+    // Prime tile 1 first if model isn't cached yet so tiles 2-4 skip fallback retries cleanly
+    if (!bpState.cachedBlueprintModel) {
+      await scanSingleTile(tiles[0]);
+      await Promise.all([scanSingleTile(tiles[1]), scanSingleTile(tiles[2])]);
+      await scanSingleTile(tiles[3]);
+    } else {
+      await Promise.all([scanSingleTile(tiles[0]), scanSingleTile(tiles[1])]);
+      await Promise.all([scanSingleTile(tiles[2]), scanSingleTile(tiles[3])]);
     }
 
-    return { ok: true, detections };
+    if (succeededTiles === 0) {
+      return {
+        ok: false,
+        reason: lastErrorReason || 'Gemini Vision scan failed.',
+        detections: [],
+        modelUsed: ''
+      };
+    }
+
+    return { ok: true, detections, modelUsed };
   }
 
   /**
@@ -1388,7 +1556,6 @@ STRICT RULES:
 
     if (bpState.inFlightScans.has(scanKey)) return;
 
-    // For automatic first-open scans, respect Admin toggle and verify cross-device table so it only runs once
     if (!isManualRescan) {
       if (!isAutoScanEnabled()) return;
       const alreadyScanned = await CalloutRepo.hasPageBeenScanned(docMeta.docId, pageNum);
@@ -1445,35 +1612,54 @@ STRICT RULES:
       const siblingIndex = buildSiblingSheetIndex(docMeta, siblingDocs);
       const proxy = await getOrLoadPdfProxy(docMeta.docId);
       const page = await proxy.getPage(pageNum);
+      const scanMode = getBlueprintScanMode(); // 'combined' | 'hybrid' | 'vision_only'
 
-      // 2. Pass 1: Fast PDF.js vector text extraction
-      setBusy('Scanning PDF text layer for sheet callouts...');
-      const vectorResult = await scanPageVectorText(page, siblingIndex);
-      let detections = vectorResult.detections || [];
+      let vectorDetections = [];
+      let ocrDetections = [];
+      let ocrModelUsed = '';
       let scanMethod = 'vector_text';
 
-      // 3. Pass 2: Gemini Vision OCR fallback when vector text finds 0 callouts
-      if (detections.length === 0) {
-        setBusy('Running Gemini OCR callout scan (tile 0/4)...');
-        const ocrResult = await scanPageGeminiVisionTiled(page, siblingIndex, (done, total) => {
-          setBusy(`Running Gemini OCR callout scan (tile ${done}/${total})...`);
+      // 2. Pass 1: Fast PDF.js vector text extraction (unless set to vision_only)
+      if (scanMode !== 'vision_only') {
+        setBusy('Scanning PDF vector text for callouts...');
+        const vectorResult = await scanPageVectorText(page, siblingIndex);
+        vectorDetections = vectorResult.detections || [];
+      }
+
+      // 3. Pass 2: High-tier Gemini 4 / 3.1 Pro Vision OCR
+      const shouldRunVision =
+        scanMode === 'combined' ||
+        scanMode === 'vision_only' ||
+        isManualRescan ||
+        vectorDetections.length === 0;
+
+      if (shouldRunVision) {
+        setBusy('Running Gemini Vision callout scan (tile 0/4)...');
+        const ocrResult = await scanPageGeminiVisionTiled(page, siblingIndex, (done, total, activeModel) => {
+          const tag = activeModel ? ` [${activeModel}]` : '';
+          setBusy(`Gemini Vision callout scan${tag} (tile ${done}/${total})...`);
         });
         if (ocrResult.ok) {
-          detections = ocrResult.detections || [];
-          scanMethod = 'gemini_ocr';
+          ocrDetections = ocrResult.detections || [];
+          ocrModelUsed = ocrResult.modelUsed || 'gemini-vision';
+          scanMethod = vectorDetections.length > 0 ? `vector+${ocrModelUsed}` : ocrModelUsed;
         } else {
-          scanMethod = 'vector_only_no_ocr_key';
+          scanMethod = vectorDetections.length > 0 ? 'vector_only_ocr_error' : 'failed_ocr';
           if (isManualRescan) {
-            notify(ocrResult.reason || 'OCR scan unavailable.', 'warning');
+            notify(ocrResult.reason || 'Gemini Vision scan unavailable.', 'warning');
           }
         }
       }
+
+      // Vector matches go first so pixel-exact CAD coordinates win deduplication,
+      // while Gemini Vision catches graphical/stroked callout bubbles vector text misses.
+      const combinedDetections = [...vectorDetections, ...ocrDetections];
 
       // 4. Preserve manual callout links; replace only previous auto-scanned links on Re-Scan
       const manualLinksOnPage = bpState.calloutLinks.filter(
         (l) => l.sourceDocId === docMeta.docId && Number(l.sourcePage) === Number(pageNum) && !l.isAutoScanned
       );
-      const finalDetections = deduplicateDetections(detections, manualLinksOnPage);
+      const finalDetections = deduplicateDetections(combinedDetections, manualLinksOnPage);
 
       if (isManualRescan) {
         try {
@@ -1517,24 +1703,23 @@ STRICT RULES:
         }
       } else if (isManualRescan) {
         SafeStorage.setJSON('prodraw_callout_links', bpState.calloutLinks);
+      // 5. Mark page scanned in Supabase across all devices (skip marking if OCR completely failed with 0 links)
+      if (scanMethod !== 'failed_ocr') {
+        await CalloutRepo.markPageScanned({
+          docId: docMeta.docId,
+          pageNum,
+          sourcePath: docMeta.dropboxPath || '',
+          folderPath,
+          scanMethod,
+          linksFound: newLinkObjects.length
+        });
       }
 
-      // 5. Mark page scanned in Supabase across all devices
-      await CalloutRepo.markPageScanned({
-        docId: docMeta.docId,
-        pageNum,
-        sourcePath: docMeta.dropboxPath || '',
-        folderPath,
-        scanMethod,
-        linksFound: newLinkObjects.length
-      });
-
-      // Re-render overlays if user is still viewing this exact sheet/page
       if (bpState.activeDoc?.docId === docMeta.docId && bpState.activePage === pageNum) {
         renderCalloutOverlays();
       }
 
-      const engineTag = scanMethod === 'gemini_ocr' ? 'Gemini OCR' : 'Vector Scan';
+      const engineTag = ocrModelUsed ? `Gemini (${ocrModelUsed})` : 'Vector Scan';
       if (newLinkObjects.length > 0) {
         notify(`${engineTag}: auto-linked ${newLinkObjects.length} callout(s) to sibling drawings!`, 'success');
       } else if (isManualRescan) {
@@ -2028,10 +2213,14 @@ STRICT RULES:
     const adminClientInput = document.getElementById('bpAdminClientIdInput');
     const adminRedirInput = document.getElementById('bpAdminRedirectUriInput');
     const autoScanToggle = document.getElementById('bpAdminAutoScanToggle');
+    const modelSelect = document.getElementById('bpAdminGeminiModelSelect');
+    const scanModeSelect = document.getElementById('bpAdminScanModeSelect');
 
     if (adminRootLbl) adminRootLbl.textContent = getLockedRoot();
     if (adminRedirInput) adminRedirInput.value = DropboxProxy.getRedirectUri();
     if (autoScanToggle) autoScanToggle.checked = isAutoScanEnabled();
+    if (modelSelect) modelSelect.value = getBlueprintModelPreference();
+    if (scanModeSelect) scanModeSelect.value = getBlueprintScanMode();
     if (adminClientInput && !adminClientInput.value) {
       adminClientInput.value = bpState.dbxClientId || SafeStorage.get('bp_dbx_client_id_draft', '');
     }
@@ -2523,7 +2712,6 @@ STRICT RULES:
     const backText = document.getElementById('bpBackHistoryPillText');
     const addLinkBtn = document.getElementById('bpToggleAddLinkBtn');
 
-    // Role-based control visibility
     if (addLinkBtn) {
       addLinkBtn.classList.toggle('hidden', !canEditCallouts());
     }
@@ -2582,7 +2770,6 @@ STRICT RULES:
     await ensureInitialized();
     bpState.isOpen = true;
 
-    // Hide other ACT sections cleanly
     ['viewCrew', 'viewAdmin', 'viewOtherModule', 'viewPmPortal', 'roleWorkspaceQuickBar'].forEach((id) => {
       document.getElementById(id)?.classList.add('hidden');
     });
@@ -2600,7 +2787,6 @@ STRICT RULES:
     updateViewerHeaderBar();
     updateConnectionBadges();
 
-    // Refresh cloud status & shared overlays in background
     DropboxProxy.refreshStatus().catch(() => {});
     if (getSupabase() && isAppOnline()) {
       CalloutRepo.fetchAllLinks()
@@ -2642,7 +2828,6 @@ STRICT RULES:
     document.getElementById('viewPmPortal')?.classList.add('hidden');
     document.getElementById('viewAdmin')?.classList.remove('hidden');
 
-    // Hide all admin sub-pages and highlight our Admin Dropbox Setup page
     document.querySelectorAll('[id^="adminPage_"]').forEach((el) => {
       el.classList.toggle('hidden', el.id !== 'adminPage_dropbox_setup');
     });
@@ -2896,7 +3081,6 @@ STRICT RULES:
       const label = document.getElementById('bpCalloutLabelInput')?.value.trim() || targetDoc.name.replace(/\.pdf$/i, '');
       const detailTitle = document.getElementById('bpCalloutDetailTitleInput')?.value.trim() || '';
 
-      // Manual creation or edit always marks isAutoScanned = false so future Re-Scans never overwrite user edits
       const linkObj = {
         id: bpState.editingCalloutId || `link_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         sourceDocId: bpState.activeDoc.docId,
@@ -3016,6 +3200,21 @@ STRICT RULES:
         'info'
       );
     });
+
+    document.getElementById('bpAdminGeminiModelSelect')?.addEventListener('change', (e) => {
+      if (!isAdminUser()) return;
+      const val = String(e.target.value || 'auto');
+      SafeStorage.set('bp_admin_gemini_model', val);
+      bpState.cachedBlueprintModel = null;
+      notify(`Blueprint Callout AI Model set to: ${val === 'auto' ? 'Auto (Gemini 4 Best Available)' : val}`, 'success');
+    });
+
+    document.getElementById('bpAdminScanModeSelect')?.addEventListener('change', (e) => {
+      if (!isAdminUser()) return;
+      const val = String(e.target.value || 'combined');
+      SafeStorage.set('bp_admin_scan_mode', val);
+      notify(`Blueprint Scan Engine Mode updated.`, 'info');
+    });
   }
 
   // -----------------------------------------------------------------------
@@ -3052,7 +3251,6 @@ STRICT RULES:
   }
 
   function installActNavigationHooks() {
-    // 1. Wrap selectMenuFeature so Blueprints opens seamlessly and hides on any other feature
     const prevSelectMenu = window.selectMenuFeature;
     window.selectMenuFeature = function (featureKey) {
       if (featureKey === 'blueprints') {
@@ -3065,7 +3263,6 @@ STRICT RULES:
       }
     };
 
-    // 2. Wrap openAdminPage to handle 'dropbox_setup' and close Blueprints on other admin pages
     const prevOpenAdmin = window.openAdminPage;
     window.openAdminPage = function (pageKey) {
       if (pageKey === 'dropbox_setup') {
@@ -3083,7 +3280,6 @@ STRICT RULES:
       }
     };
 
-    // 3. Wrap Personal Card & Logout so Blueprints closes cleanly
     const prevPersonalCard = window.openMyPersonalCardView;
     if (typeof prevPersonalCard === 'function') {
       window.openMyPersonalCardView = function () {
@@ -3100,7 +3296,6 @@ STRICT RULES:
       };
     }
 
-    // 4. Sync Blueprints role controls whenever ACT updates role visibility
     const syncRoleControls = () => {
       const bpBtn = document.getElementById('menuFeatBlueprints');
       if (bpBtn) bpBtn.classList.remove('hidden');
@@ -3129,7 +3324,6 @@ STRICT RULES:
     syncRoleControls();
   }
 
-  // Expose safe public API for debugging and cross-module invocation
   window.ACTBlueprints = {
     open: openBlueprintsView,
     close: closeBlueprintsView,
@@ -3146,11 +3340,9 @@ STRICT RULES:
     updateConnectionBadges();
   });
 
-  // Install navigation hooks immediately after all other ACT scripts load
   installActNavigationHooks();
   ensureInitialized()
     .then(() => {
-      // Allow app-core.js a moment to finish initializing supabaseClient, then sync status badge
       setTimeout(() => {
         DropboxProxy.refreshStatus().catch(() => {});
       }, 350);
