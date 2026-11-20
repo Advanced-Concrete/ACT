@@ -129,12 +129,6 @@
     idbDeleteSession().catch(() => {});
   }
 
-  function clearSavedSession() {
-    try {
-      window.localStorage.removeItem(SESSION_STORAGE_KEY);
-    } catch {}
-  }
-
   // Computes a one-way fingerprint of userId + PIN so plaintext PINs are never saved
   async function hashUserPin(userId, pin) {
     const input = `act-session-v1:${String(userId)}:${String(pin || '1234')}`;
