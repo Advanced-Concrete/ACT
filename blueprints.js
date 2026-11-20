@@ -1703,6 +1703,12 @@ STRICT RULES:
         }
       } else if (isManualRescan) {
         SafeStorage.setJSON('prodraw_callout_links', bpState.calloutLinks);
+        if (bpState.offlineSets.has(docMeta.docId)) {
+          const docLinks = bpState.calloutLinks.filter((l) => l.sourceDocId === docMeta.docId);
+          await ProDrawOfflineDB.saveOverlays(docMeta.docId, docLinks);
+        }
+      }
+
       // 5. Mark page scanned in Supabase across all devices (skip marking if OCR completely failed with 0 links)
       if (scanMethod !== 'failed_ocr') {
         await CalloutRepo.markPageScanned({
