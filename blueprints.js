@@ -3258,6 +3258,12 @@ STRICT RULES:
         await DropboxProxy.disconnectAdmin(pin);
         const pinInp = document.getElementById('bpAdminVerifyPinInput');
         if (pinInp) pinInp.value = '';
+        notify('Dropbox disconnected on server.', 'info');
+      } catch (err) {
+        showAdminErr(err.message);
+      }
+    });
+
     document.getElementById('bpAdminAutoScanToggle')?.addEventListener('change', async (e) => {
       if (!isAdminUser()) return;
       const enabled = Boolean(e.target.checked);
