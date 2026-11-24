@@ -4,6 +4,7 @@
 // - Role guards:
 //     Supervisor / PM / Admin: Calibrate & Recalibrate sheets (synced to Supabase)
 //     Crew:                    Measure Distance & Area on calibrated sheets (read-only scale)
+// - Desktop: Precision crosshair cursor while Measure Mode is active
 // - Tap to place points; drag anywhere to pan; pinch to zoom; drag dots to fine-tune
 // =========================================================================
 (function initBlueprintMeasure() {
@@ -347,6 +348,21 @@
       #viewBlueprints.bp-measure-active #bpCalloutOverlayLayer {
         pointer-events: none !important;
       }
+      #viewBlueprints.bp-measure-active #bpCanvasViewport,
+      #viewBlueprints.bp-measure-active #bpCanvasViewport.cursor-grab,
+      #viewBlueprints.bp-measure-active #bpCanvasViewport.cursor-grabbing,
+      #viewBlueprints.bp-measure-active #bpDrawingStage {
+        cursor: crosshair !important;
+      }
+      #viewBlueprints.bp-measure-active [data-bp-measure-ui] {
+        cursor: default !important;
+      }
+      #viewBlueprints.bp-measure-active [data-bp-measure-ui] button {
+        cursor: pointer !important;
+      }
+      #viewBlueprints.bp-measure-active [data-bp-measure-ui] input {
+        cursor: text !important;
+      }
       #bpMeasureStageLayer {
         position: absolute;
         inset: 0;
@@ -374,6 +390,9 @@
         pointer-events: auto;
         touch-action: none;
         z-index: 35;
+      }
+      .bp-m-handle.is-dragging {
+        cursor: crosshair !important;
       }
       .bp-m-handle-dot {
         width: 11px;
