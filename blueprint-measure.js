@@ -2,17 +2,20 @@
 // ACT MASTER - BLUEPRINT REFERENCE MEASUREMENTS (blueprint-measure.js)
 // Drop-in Distance & Surface Area measurement overlay for blueprints.js
 // - Role guards:
-//     Supervisor / PM / Admin: Calibrate & Recalibrate sheets (synced to Supabase)
+//     Supervisor / PM / Admin: Calibrate & Recalibrate sheets (shared in Supabase)
 //     Crew:                    Measure Distance & Area on calibrated sheets (read-only scale)
+// - Top "Measured Totals" dropdown: select any measurement to highlight its lines
+//   and individual segment lengths on screen
+// - Per-user saved measurements synced across devices via `blueprint_user_measurements`
 // - Desktop: Precision crosshair cursor while Measure Mode is active
-// - Tap/click amber start dot (3+ pts) to close a Distance perimeter or Area loop
-// - Drag anywhere to pan; pinch to zoom; drag dots to fine-tune
 // =========================================================================
 (function initBlueprintMeasure() {
   'use strict';
 
   const SCALES_TABLE = 'blueprint_page_scales';
-  const LOCAL_CACHE_KEY = 'bp_page_scales_cache_v1';
+  const USER_MEASURES_TABLE = 'blueprint_user_measurements';
+  const LOCAL_SCALE_CACHE_KEY = 'bp_page_scales_cache_v1';
+  const LOCAL_MEASURES_CACHE_KEY = 'bp_user_measures_cache_v1';
   const SVG_NS = 'http://www.w3.org/2000/svg';
 
   const ARCHITECTURAL_PRESETS = [
@@ -41,12 +44,18 @@
     tool: 'distance', // 'distance' | 'area' | 'calibrate'
     orthoSnap: false,
     pageScale: null, // { scale_label, calibration_mode, width_ft, height_ft, calibrated_by, updated_at }
-    scaleCache: loadLocalScaleCache(),
+    scaleCache: loadLocalJSON(LOCAL_SCALE_CACHE_KEY, {}),
+    savedCache: loadLocalJSON(LOCAL_MEASURES_CACHE_KEY, {}),
     currentDocKey: '',
+    currentUserPageKey: '',
 
-    // Temporary measurements on active page
-    shapes: [], // [{ id, type: 'distance'|'area', points: [{x,y}], closed: bool }]
+    // Measurements on active page (unsaved + current user's saved)
+    // [{ id, type: 'distance'|'area', points: [{x,y}], closed: bool, saved: bool, name: string, updatedAt: string }]
+    shapes: [],
     activeShapeId: null,
+    selectedShapeId: null,
+    totalsDropdownOpen: false,
+    isSaving: false,
 
     // 2-Point Calibration points
     calPoints: [], // [{x, y}, {x, y}]
@@ -65,7 +74,7 @@
   };
 
   // =========================================================================
-  // 1. BRIDGE & STORAGE HELPERS
+  // 1. BRIDGE, USER IDENTITY & STORAGE HELPERS
   // =========================================================================
   function getBridge() {
     return window.ACTBlueprints?._bridge || null;
@@ -76,6 +85,28 @@
     return b ? b.getState() : null;
   }
 
+  function getCurrentUserId() {
+    try {
+      if (typeof activeCrewEmployeeId !== 'undefined' && activeCrewEmployeeId) {
+        return String(activeCrewEmployeeId);
+      }
+    } catch {}
+    try {
+      const role =
+        typeof getActiveUserEffectiveRole === 'function'
+          ? getActiveUserEffectiveRole()
+          : typeof currentRole !== 'undefined'
+          ? currentRole
+          : '';
+      if (String(role).toLowerCase() === 'admin') return 'ADMIN';
+    } catch {}
+    const s = getViewerState();
+    if (s?.userName) {
+      return `user_${String(s.userName).toLowerCase().replace(/[^a-z0-9]+/g, '_')}`;
+    }
+    return 'local_user';
+  }
+
   function toast(msg, type = 'info') {
     const b = getBridge();
     if (b?.notify) b.notify(msg, type);
@@ -83,24 +114,30 @@
     else console.log(`[Measure ${type}]`, msg);
   }
 
-  function loadLocalScaleCache() {
+  function loadLocalJSON(key, fallback) {
     try {
-      const raw = window.localStorage.getItem(LOCAL_CACHE_KEY);
-      return raw ? JSON.parse(raw) : {};
+      const raw = window.localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : fallback;
     } catch {
-      return {};
+      return fallback;
     }
   }
 
-  function saveLocalScaleCache() {
+  function saveLocalJSON(key, value) {
     try {
-      window.localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify(mState.scaleCache));
+      window.localStorage.setItem(key, JSON.stringify(value));
     } catch {}
   }
 
   function getDocPageKey(s) {
     if (!s?.activeDoc?.docId) return '';
     return `${s.activeDoc.docId}::${Number(s.activePage) || 1}`;
+  }
+
+  function getUserPageKey(s) {
+    const docKey = getDocPageKey(s);
+    if (!docKey) return '';
+    return `${getCurrentUserId()}::${docKey}`;
   }
 
   function esc(str) {
@@ -198,6 +235,37 @@
     return { areaSqFt, perimeterFt, edges, centroid };
   }
 
+  function isMeasurableShape(shape) {
+    if (!shape || !Array.isArray(shape.points)) return false;
+    return shape.type === 'area' ? shape.points.length >= 3 : shape.points.length >= 2;
+  }
+
+  function getShapeSummary(shape, index, scale) {
+    if (shape.type === 'distance') {
+      const { totalFt, segments } = computeDistanceMetrics(shape.points, scale, shape.closed);
+      const defaultTitle = shape.closed
+        ? `Perimeter #${index + 1} (${segments.length} sides)`
+        : segments.length > 1
+        ? `Multi-Line #${index + 1} (${segments.length} lines)`
+        : `Line #${index + 1}`;
+      return {
+        title: shape.name?.trim() || defaultTitle,
+        primaryTotal: scale ? formatFeetInches(totalFt) : '--',
+        secondaryTotal: scale ? formatDecimalFeet(totalFt) : '',
+        segmentLabels: segments.map((seg, i) => `L${i + 1}: ${formatFeetInches(seg.len)}`)
+      };
+    }
+
+    const { areaSqFt, perimeterFt, edges } = computeAreaMetrics(shape.points, scale);
+    const defaultTitle = `Area #${index + 1} (${shape.points.length} corners)`;
+    return {
+      title: shape.name?.trim() || defaultTitle,
+      primaryTotal: scale ? formatSqFt(areaSqFt) : '--',
+      secondaryTotal: scale ? `Perim ${formatFeetInches(perimeterFt)}` : '',
+      segmentLabels: edges.map((ed, i) => `S${i + 1}: ${formatFeetInches(ed.len)}`)
+    };
+  }
+
   function applyOrthoIfEnabled(pt, prevPt, stageW, stageH) {
     if (!mState.orthoSnap || !prevPt) return pt;
     const dx = (pt.x - prevPt.x) * (stageW || 1);
@@ -222,7 +290,7 @@
   }
 
   // =========================================================================
-  // 3. SUPABASE SCALE SYNC (blueprint_page_scales)
+  // 3. SUPABASE SCALE SYNC & PER-USER MEASUREMENT SYNC
   // =========================================================================
   async function loadScaleForActivePage() {
     const s = getViewerState();
@@ -234,7 +302,6 @@
       return;
     }
 
-    // Show cached scale immediately (supports offline viewing)
     mState.pageScale = mState.scaleCache[key] || null;
     renderMeasureUI();
 
@@ -249,7 +316,7 @@
         .maybeSingle();
 
       if (error) return;
-      if (getDocPageKey(getViewerState()) !== key) return; // User already switched pages
+      if (getDocPageKey(getViewerState()) !== key) return;
 
       if (data && Number(data.width_ft) > 0 && Number(data.height_ft) > 0) {
         mState.pageScale = {
@@ -261,11 +328,11 @@
           updated_at: data.updated_at || ''
         };
         mState.scaleCache[key] = mState.pageScale;
-        saveLocalScaleCache();
+        saveLocalJSON(LOCAL_SCALE_CACHE_KEY, mState.scaleCache);
       } else {
         mState.pageScale = null;
         delete mState.scaleCache[key];
-        saveLocalScaleCache();
+        saveLocalJSON(LOCAL_SCALE_CACHE_KEY, mState.scaleCache);
       }
       renderMeasureUI();
     } catch {}
@@ -283,7 +350,6 @@
       return false;
     }
 
-    // Confirm overwrite if another calibration already exists on this sheet
     if (mState.pageScale) {
       const prevBy = mState.pageScale.calibrated_by || 'another user';
       const prevDate = formatShortDate(mState.pageScale.updated_at);
@@ -316,7 +382,7 @@
       updated_at: record.updated_at
     };
     mState.scaleCache[key] = mState.pageScale;
-    saveLocalScaleCache();
+    saveLocalJSON(LOCAL_SCALE_CACHE_KEY, mState.scaleCache);
 
     let synced = false;
     if (s.supabase && s.isOnline) {
@@ -341,6 +407,207 @@
       toast(`Sheet scale saved locally (${scaleLabel}) while offline.`, 'info');
     }
     return true;
+  }
+
+  function sanitizeShapeRow(row) {
+    const pts = Array.isArray(row.points)
+      ? row.points
+          .map((p) => ({ x: Number(p.x), y: Number(p.y) }))
+          .filter((p) => isFinite(p.x) && isFinite(p.y))
+      : [];
+    return {
+      id: String(row.id),
+      type: row.shape_type === 'area' ? 'area' : 'distance',
+      points: pts,
+      closed: Boolean(row.closed),
+      name: String(row.name || ''),
+      saved: true,
+      updatedAt: row.updated_at || ''
+    };
+  }
+
+  function updateLocalSavedCacheForCurrentPage() {
+    const s = getViewerState();
+    const userPageKey = getUserPageKey(s);
+    if (!userPageKey) return;
+    const savedList = mState.shapes
+      .filter((sh) => sh.saved)
+      .map((sh) => ({
+        id: sh.id,
+        shape_type: sh.type,
+        points: sh.points,
+        closed: sh.closed,
+        name: sh.name || '',
+        updated_at: sh.updatedAt || new Date().toISOString()
+      }));
+    if (savedList.length > 0) {
+      mState.savedCache[userPageKey] = savedList;
+    } else {
+      delete mState.savedCache[userPageKey];
+    }
+    saveLocalJSON(LOCAL_MEASURES_CACHE_KEY, mState.savedCache);
+  }
+
+  function mergeSavedShapesIntoState(savedShapes) {
+    const unsaved = mState.shapes.filter((sh) => !sh.saved);
+    const savedIds = new Set(savedShapes.map((sh) => sh.id));
+    const keptUnsaved = unsaved.filter((sh) => !savedIds.has(sh.id));
+    mState.shapes = [...savedShapes, ...keptUnsaved];
+    if (mState.selectedShapeId && !mState.shapes.some((sh) => sh.id === mState.selectedShapeId)) {
+      mState.selectedShapeId = null;
+    }
+  }
+
+  async function loadUserMeasurementsForActivePage() {
+    const s = getViewerState();
+    const userPageKey = getUserPageKey(s);
+    const isSamePage = userPageKey === mState.currentUserPageKey;
+    mState.currentUserPageKey = userPageKey;
+
+    if (!userPageKey) {
+      mState.shapes = [];
+      mState.activeShapeId = null;
+      mState.selectedShapeId = null;
+      renderMeasureUI();
+      return;
+    }
+
+    if (!isSamePage) {
+      mState.shapes = [];
+      mState.activeShapeId = null;
+      mState.selectedShapeId = null;
+      mState.totalsDropdownOpen = false;
+    }
+
+    // Hydrate from local per-user cache immediately for instant / offline display
+    const cachedRows = mState.savedCache[userPageKey];
+    if (Array.isArray(cachedRows) && cachedRows.length > 0) {
+      mergeSavedShapesIntoState(cachedRows.map(sanitizeShapeRow));
+      renderMeasureUI();
+    }
+
+    if (!s.supabase || !s.isOnline) return;
+
+    try {
+      const userId = getCurrentUserId();
+      const { data, error } = await s.supabase
+        .from(USER_MEASURES_TABLE)
+        .select('id, shape_type, points, closed, name, updated_at')
+        .eq('user_id', userId)
+        .eq('doc_id', s.activeDoc.docId)
+        .eq('page_number', Number(s.activePage) || 1)
+        .order('updated_at', { ascending: true });
+
+      if (error) return;
+      if (getUserPageKey(getViewerState()) !== userPageKey) return;
+
+      const remoteShapes = (data || []).map(sanitizeShapeRow);
+      mergeSavedShapesIntoState(remoteShapes);
+      updateLocalSavedCacheForCurrentPage();
+      renderMeasureUI();
+    } catch {}
+  }
+
+  async function saveShapesToSupabase(shapesToSave, { silent = false } = {}) {
+    const s = getViewerState();
+    if (!s?.activeDoc) return false;
+    const valid = shapesToSave.filter(isMeasurableShape);
+    if (valid.length === 0) {
+      if (!silent) toast('Finish placing at least one measurement before saving.', 'warning');
+      return false;
+    }
+
+    const userId = getCurrentUserId();
+    const nowIso = new Date().toISOString();
+    const rows = valid.map((sh) => ({
+      id: sh.id,
+      user_id: userId,
+      user_name: s.userName || 'User',
+      doc_id: s.activeDoc.docId,
+      page_number: Number(s.activePage) || 1,
+      source_path: s.activeDoc.dropboxPath || null,
+      name: String(sh.name || '').trim(),
+      shape_type: sh.type,
+      points: sh.points,
+      closed: Boolean(sh.closed),
+      updated_at: nowIso
+    }));
+
+    valid.forEach((sh) => {
+      sh.saved = true;
+      sh.updatedAt = nowIso;
+      if (mState.activeShapeId === sh.id) {
+        mState.activeShapeId = null;
+      }
+    });
+    updateLocalSavedCacheForCurrentPage();
+    renderMeasureUI();
+
+    if (!s.supabase || !s.isOnline) {
+      if (!silent) toast('Saved locally while offline.', 'info');
+      return true;
+    }
+
+    try {
+      mState.isSaving = true;
+      const { error } = await s.supabase
+        .from(USER_MEASURES_TABLE)
+        .upsert(rows, { onConflict: 'id' });
+      if (error) throw error;
+      if (!silent) {
+        toast(
+          valid.length === 1
+            ? 'Measurement saved to your account.'
+            : `Saved ${valid.length} measurements to your account.`,
+          'success'
+        );
+      }
+      return true;
+    } catch (err) {
+      if (!silent) toast(`Saved locally (sync warning: ${err.message})`, 'warning');
+      return false;
+    } finally {
+      mState.isSaving = false;
+      renderTopTotalsDropdown();
+    }
+  }
+
+  async function deleteShapeById(shapeId, { skipConfirm = false } = {}) {
+    const shape = mState.shapes.find((sh) => sh.id === shapeId);
+    if (!shape) return;
+
+    if (!skipConfirm) {
+      const idx = mState.shapes.indexOf(shape);
+      const summary = getShapeSummary(shape, idx, mState.pageScale);
+      const msg = shape.saved
+        ? `Delete saved measurement "${summary.title}" (${summary.primaryTotal}) from your account across all devices?`
+        : `Delete measurement "${summary.title}" (${summary.primaryTotal})?`;
+      if (!confirm(msg)) return;
+    }
+
+    const wasSaved = Boolean(shape.saved);
+    mState.shapes = mState.shapes.filter((sh) => sh.id !== shapeId);
+    if (mState.activeShapeId === shapeId) mState.activeShapeId = null;
+    if (mState.selectedShapeId === shapeId) mState.selectedShapeId = null;
+    updateLocalSavedCacheForCurrentPage();
+    renderMeasureUI();
+
+    if (wasSaved) {
+      const s = getViewerState();
+      if (s?.supabase && s.isOnline) {
+        try {
+          const { error } = await s.supabase
+            .from(USER_MEASURES_TABLE)
+            .delete()
+            .eq('id', shapeId)
+            .eq('user_id', getCurrentUserId());
+          if (error) throw error;
+          toast('Saved measurement deleted.', 'info');
+        } catch (err) {
+          toast(`Removed locally (cloud delete warning: ${err.message})`, 'warning');
+        }
+      }
+    }
   }
 
   // =========================================================================
@@ -397,6 +664,9 @@
         touch-action: none;
         z-index: 35;
       }
+      .bp-m-handle.is-dimmed {
+        opacity: 0.25;
+      }
       .bp-m-handle.is-close-target {
         cursor: pointer !important;
         z-index: 38;
@@ -411,6 +681,11 @@
         border: 2px solid #ffffff;
         box-shadow: 0 1px 4px rgba(0, 0, 0, 0.75);
         transition: transform 120ms ease;
+      }
+      .bp-m-handle.is-highlighted .bp-m-handle-dot {
+        width: 13px;
+        height: 13px;
+        box-shadow: 0 0 0 4px rgba(251, 191, 36, 0.45), 0 1px 6px rgba(0, 0, 0, 0.85);
       }
       .bp-m-handle.is-close-target .bp-m-handle-dot {
         width: 14px;
@@ -437,6 +712,12 @@
         pointer-events: none;
         box-shadow: 0 2px 6px rgba(0, 0, 0, 0.55);
         z-index: 32;
+      }
+      .bp-m-label.is-highlighted {
+        z-index: 36;
+        padding: 3px 9px;
+        font-size: 12px;
+        box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.45), 0 3px 10px rgba(0, 0, 0, 0.75);
       }
     `;
     document.head.appendChild(style);
@@ -495,6 +776,17 @@
       topBanner.className =
         'hidden absolute top-3 left-1/2 -translate-x-1/2 z-40 max-w-[94%] px-3.5 py-2 rounded-xl bg-amber-500 text-slate-950 font-bold text-xs shadow-xl flex items-center gap-2.5';
       viewport.appendChild(topBanner);
+    }
+
+    if (!document.getElementById('bpMeasureTotalsWrap')) {
+      const totalsWrap = document.createElement('div');
+      totalsWrap.id = 'bpMeasureTotalsWrap';
+      totalsWrap.setAttribute('data-bp-measure-ui', '1');
+      totalsWrap.className =
+        'hidden absolute top-3 left-1/2 -translate-x-1/2 z-40 w-[94%] max-w-md flex flex-col items-center';
+      // Prevent scrolling inside the dropdown list from zooming the PDF underneath
+      totalsWrap.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true });
+      viewport.appendChild(totalsWrap);
     }
 
     if (!document.getElementById('bpMeasureDock')) {
@@ -747,6 +1039,7 @@
         closeScaleModal();
         mState.calPoints = [];
         mState.tool = 'calibrate';
+        mState.totalsDropdownOpen = false;
         renderMeasureUI();
       };
     }
@@ -771,7 +1064,7 @@
   }
 
   // =========================================================================
-  // 6. OVERLAY RENDERING (SVG LINES/POLYGONS + CRISP HANDLES & LABELS)
+  // 6. OVERLAY RENDERING (SVG LINES/POLYGONS + HIGHLIGHTING + HANDLES/LABELS)
   // =========================================================================
   function updateZoomScaleVar(zoom) {
     const layer = document.getElementById('bpMeasureStageLayer');
@@ -805,6 +1098,10 @@
     svg.innerHTML = '';
     htmlLayer.innerHTML = '';
 
+    const hasSelection = Boolean(
+      mState.selectedShapeId && mState.shapes.some((sh) => sh.id === mState.selectedShapeId)
+    );
+
     const addSvgEl = (tag, attrs) => {
       const el = document.createElementNS(SVG_NS, tag);
       for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, String(v));
@@ -812,9 +1109,9 @@
       return el;
     };
 
-    const addLabel = (nx, ny, text, bgClass) => {
+    const addLabel = (nx, ny, text, bgClass, isHighlighted = false) => {
       const div = document.createElement('div');
-      div.className = `bp-m-label ${bgClass}`;
+      div.className = `bp-m-label ${bgClass}${isHighlighted ? ' is-highlighted' : ''}`;
       div.style.left = `${(nx * 100).toFixed(4)}%`;
       div.style.top = `${(ny * 100).toFixed(4)}%`;
       div.textContent = text;
@@ -823,7 +1120,11 @@
 
     const addHandle = (nx, ny, dotBg, meta) => {
       const h = document.createElement('div');
-      h.className = meta.isCloseTarget ? 'bp-m-handle is-close-target' : 'bp-m-handle';
+      const classes = ['bp-m-handle'];
+      if (meta.isCloseTarget) classes.push('is-close-target');
+      if (meta.isDimmed) classes.push('is-dimmed');
+      if (meta.isHighlighted) classes.push('is-highlighted');
+      h.className = classes.join(' ');
       h.style.left = `${(nx * 100).toFixed(4)}%`;
       h.style.top = `${(ny * 100).toFixed(4)}%`;
       if (meta.isCloseTarget) {
@@ -831,8 +1132,7 @@
       }
       h.innerHTML = `<div class="bp-m-handle-dot" style="background:${dotBg};"></div>`;
 
-      // When drawing an open 3+ point Distance perimeter or Area, tapping/clicking
-      // the first point immediately closes & finishes the shape instead of dragging it
+      // Click/tap first point on an open 3+ point shape to close & finish loop
       if (meta.isCloseTarget) {
         h.addEventListener('pointerdown', (e) => {
           e.stopPropagation();
@@ -875,7 +1175,6 @@
         const dxScreen = e.clientX - d.startClientX;
         const dyScreen = e.clientY - d.startClientY;
 
-        // Require > 6px movement before dragging so normal clicks never nudge a dot
         if (!d.moved) {
           if (Math.hypot(dxScreen, dyScreen) <= 6) return;
           d.moved = true;
@@ -896,6 +1195,7 @@
           }
         }
         renderOverlayGraphics();
+        renderTopTotalsDropdown();
         renderDock();
       });
 
@@ -904,6 +1204,14 @@
         if (!d || d.pointerId !== e.pointerId) return;
         e.stopPropagation();
         d.el.classList.remove('is-dragging');
+
+        // Auto-sync vertex edits back to Supabase if this measurement is already saved
+        if (d.moved && d.meta.kind === 'shape') {
+          const shape = mState.shapes.find((sh) => sh.id === d.meta.shapeId);
+          if (shape && shape.saved) {
+            saveShapesToSupabase([shape], { silent: true });
+          }
+        }
         mState.draggingHandle = null;
       };
 
@@ -932,42 +1240,71 @@
       });
     }
 
-    // B. Draw distance & area shapes
+    // B. Draw distance & area shapes (render highlighted shape last so it stays on top)
     const scale = mState.pageScale;
-    for (const shape of mState.shapes) {
+    const orderedShapes = [...mState.shapes].sort((a, b) => {
+      if (a.id === mState.selectedShapeId) return 1;
+      if (b.id === mState.selectedShapeId) return -1;
+      return 0;
+    });
+
+    for (const shape of orderedShapes) {
       const pts = shape.points;
       if (!pts.length) continue;
+
+      const isSelected = hasSelection && shape.id === mState.selectedShapeId;
+      const isDimmed = hasSelection && !isSelected;
+      const strokeOpacity = isDimmed ? '0.2' : '1';
 
       if (shape.type === 'distance') {
         const { segments } = computeDistanceMetrics(pts, scale, shape.closed);
         for (const seg of segments) {
+          if (isSelected) {
+            addSvgEl('line', {
+              x1: seg.a.x * W,
+              y1: seg.a.y * H,
+              x2: seg.b.x * W,
+              y2: seg.b.y * H,
+              stroke: '#fbbf24',
+              'stroke-width': 9,
+              'stroke-opacity': '0.45',
+              'stroke-linecap': 'round',
+              'vector-effect': 'non-scaling-stroke'
+            });
+          }
           addSvgEl('line', {
             x1: seg.a.x * W,
             y1: seg.a.y * H,
             x2: seg.b.x * W,
             y2: seg.b.y * H,
-            stroke: '#38bdf8',
-            'stroke-width': 3,
+            stroke: isSelected ? '#fbbf24' : '#38bdf8',
+            'stroke-width': isSelected ? 4 : 3,
+            'stroke-opacity': strokeOpacity,
             'stroke-linecap': 'round',
             'vector-effect': 'non-scaling-stroke'
           });
-          if (scale) {
+          if (scale && !isDimmed) {
             addLabel(
               (seg.a.x + seg.b.x) / 2,
               (seg.a.y + seg.b.y) / 2,
               formatFeetInches(seg.len),
-              'bg-sky-500 text-slate-950 border border-white/60'
+              isSelected
+                ? 'bg-amber-400 text-slate-950 border-2 border-white'
+                : 'bg-sky-500 text-slate-950 border border-white/60',
+              isSelected
             );
           }
         }
         pts.forEach((pt, idx) => {
           const isStartCloseable =
             idx === 0 && !shape.closed && shape.id === mState.activeShapeId && pts.length >= 3;
-          addHandle(pt.x, pt.y, isStartCloseable ? '#f59e0b' : '#0284c7', {
+          addHandle(pt.x, pt.y, isStartCloseable || isSelected ? '#f59e0b' : '#0284c7', {
             kind: 'shape',
             shapeId: shape.id,
             idx,
-            isCloseTarget: isStartCloseable
+            isCloseTarget: isStartCloseable,
+            isDimmed,
+            isHighlighted: isSelected
           });
         });
       } else if (shape.type === 'area') {
@@ -975,46 +1312,69 @@
         if (pts.length >= 3) {
           addSvgEl('polygon', {
             points: pts.map((p) => `${(p.x * W).toFixed(2)},${(p.y * H).toFixed(2)}`).join(' '),
-            fill: 'rgba(16, 185, 129, 0.22)',
+            fill: isSelected ? 'rgba(16, 185, 129, 0.34)' : 'rgba(16, 185, 129, 0.22)',
+            'fill-opacity': isDimmed ? '0.2' : '1',
             stroke: 'none'
           });
         }
         for (const edge of edges) {
+          if (isSelected) {
+            addSvgEl('line', {
+              x1: edge.a.x * W,
+              y1: edge.a.y * H,
+              x2: edge.b.x * W,
+              y2: edge.b.y * H,
+              stroke: '#fbbf24',
+              'stroke-width': 8,
+              'stroke-opacity': '0.45',
+              'stroke-linecap': 'round',
+              'vector-effect': 'non-scaling-stroke'
+            });
+          }
           addSvgEl('line', {
             x1: edge.a.x * W,
             y1: edge.a.y * H,
             x2: edge.b.x * W,
             y2: edge.b.y * H,
-            stroke: '#10b981',
-            'stroke-width': 2.75,
+            stroke: isSelected ? '#34d399' : '#10b981',
+            'stroke-width': isSelected ? 3.75 : 2.75,
+            'stroke-opacity': strokeOpacity,
             'stroke-dasharray': edge.isClosing && !shape.closed ? '6 5' : '',
             'vector-effect': 'non-scaling-stroke'
           });
-          if (scale && edge.len > 0) {
+          if (scale && edge.len > 0 && !isDimmed) {
             addLabel(
               (edge.a.x + edge.b.x) / 2,
               (edge.a.y + edge.b.y) / 2,
               formatFeetInches(edge.len),
-              'bg-slate-900/90 text-emerald-300 border border-emerald-500/60'
+              isSelected
+                ? 'bg-amber-400 text-slate-950 border-2 border-white'
+                : 'bg-slate-900/90 text-emerald-300 border border-emerald-500/60',
+              isSelected
             );
           }
         }
-        if (scale && centroid && pts.length >= 3) {
+        if (scale && centroid && pts.length >= 3 && !isDimmed) {
           addLabel(
             centroid.x,
             centroid.y,
             formatSqFt(areaSqFt),
-            'bg-emerald-500 text-slate-950 border border-white/70'
+            isSelected
+              ? 'bg-emerald-400 text-slate-950 border-2 border-white'
+              : 'bg-emerald-500 text-slate-950 border border-white/70',
+            isSelected
           );
         }
         pts.forEach((pt, idx) => {
           const isStartCloseable =
             idx === 0 && !shape.closed && shape.id === mState.activeShapeId && pts.length >= 3;
-          addHandle(pt.x, pt.y, isStartCloseable ? '#f59e0b' : '#10b981', {
+          addHandle(pt.x, pt.y, isStartCloseable || isSelected ? '#f59e0b' : '#10b981', {
             kind: 'shape',
             shapeId: shape.id,
             idx,
-            isCloseTarget: isStartCloseable
+            isCloseTarget: isStartCloseable,
+            isDimmed,
+            isHighlighted: isSelected
           });
         });
       }
@@ -1022,7 +1382,7 @@
   }
 
   // =========================================================================
-  // 7. FLOATING DOCK & TOP CALIBRATION BANNER
+  // 7. TOP MEASURED TOTALS DROPDOWN, CALIBRATION BANNER & FLOATING DOCK
   // =========================================================================
   function renderTopBanner() {
     const banner = document.getElementById('bpMeasureTopBanner');
@@ -1054,6 +1414,223 @@
     };
   }
 
+  function renderTopTotalsDropdown() {
+    const wrap = document.getElementById('bpMeasureTotalsWrap');
+    const s = getViewerState();
+    if (!wrap) return;
+
+    const measurable = mState.shapes.filter(isMeasurableShape);
+    if (!mState.active || !s?.activeDoc || !mState.pageScale || mState.tool === 'calibrate' || measurable.length === 0) {
+      wrap.classList.add('hidden');
+      return;
+    }
+
+    wrap.classList.remove('hidden');
+    const scale = mState.pageScale;
+    const selectedIdx = mState.selectedShapeId
+      ? measurable.findIndex((sh) => sh.id === mState.selectedShapeId)
+      : -1;
+    const selectedShape = selectedIdx >= 0 ? measurable[selectedIdx] : null;
+    const selectedSummary = selectedShape ? getShapeSummary(selectedShape, selectedIdx, scale) : null;
+
+    const unsavedShapes = measurable.filter((sh) => !sh.saved);
+    const savedCount = measurable.length - unsavedShapes.length;
+
+    const triggerLabel = selectedSummary
+      ? `<span class="w-2 h-2 rounded-full bg-amber-400 shrink-0"></span>
+         <span class="truncate">${esc(selectedSummary.title)}: <strong class="text-amber-300">${esc(selectedSummary.primaryTotal)}</strong></span>`
+      : `<span class="w-2 h-2 rounded-full ${savedCount === measurable.length ? 'bg-emerald-400' : 'bg-sky-400'} shrink-0"></span>
+         <span class="truncate">Measured Totals (${measurable.length})</span>`;
+
+    let menuHtml = '';
+    if (mState.totalsDropdownOpen) {
+      const itemsHtml = measurable
+        .map((sh, idx) => {
+          const sum = getShapeSummary(sh, idx, scale);
+          const isSel = sh.id === mState.selectedShapeId;
+          const dotColor = sh.saved ? 'bg-emerald-400' : 'bg-slate-500';
+          const typeIcon = sh.type === 'area' ? '⬠' : '📏';
+
+          return `
+            <div class="rounded-xl border transition ${
+              isSel
+                ? 'bg-amber-500/15 border-amber-400/60'
+                : 'bg-slate-950/75 border-slate-800 hover:border-slate-700'
+            }">
+              <div class="flex items-center gap-2 p-2.5">
+                <button type="button" data-select-shape="${esc(sh.id)}"
+                  class="flex-1 min-w-0 text-left flex items-start gap-2.5">
+                  <span class="mt-1.5 w-2 h-2 rounded-full ${dotColor} shrink-0" title="${sh.saved ? 'Saved to your account' : 'Unsaved'}"></span>
+                  <div class="min-w-0 flex-1">
+                    <div class="text-xs font-bold ${isSel ? 'text-amber-200' : 'text-slate-200'} truncate">
+                      ${typeIcon} ${esc(sum.title)}
+                    </div>
+                    <div class="text-sm font-extrabold text-white leading-tight mt-0.5">
+                      ${esc(sum.primaryTotal)}
+                      ${sum.secondaryTotal ? `<span class="text-[11px] font-semibold text-slate-400 ml-1">${esc(sum.secondaryTotal)}</span>` : ''}
+                    </div>
+                  </div>
+                </button>
+
+                <div class="flex items-center gap-1 shrink-0">
+                  ${
+                    !sh.saved
+                      ? `<button type="button" data-save-shape="${esc(sh.id)}"
+                          class="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/35 border border-emerald-500/40 text-emerald-300 text-[11px] font-bold">
+                          Save
+                        </button>`
+                      : `<button type="button" data-rename-shape="${esc(sh.id)}" title="Rename saved measurement"
+                          class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold flex items-center justify-center">
+                          ✎
+                        </button>`
+                  }
+                  <button type="button" data-delete-shape="${esc(sh.id)}" title="Delete measurement"
+                    class="w-8 h-8 rounded-lg bg-rose-500/15 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 text-xs font-bold flex items-center justify-center">
+                    ✕
+                  </button>
+                </div>
+              </div>
+
+              ${
+                isSel && sum.segmentLabels.length > 0
+                  ? `
+                    <div class="px-3 pb-2.5 pt-1.5 border-t border-amber-400/25 flex flex-wrap gap-1.5">
+                      ${sum.segmentLabels
+                        .map(
+                          (lbl) =>
+                            `<span class="px-2 py-0.5 rounded-md bg-slate-900/90 border border-amber-400/40 text-[11px] font-bold text-amber-200">${esc(lbl)}</span>`
+                        )
+                        .join('')}
+                    </div>
+                  `
+                  : ''
+              }
+            </div>
+          `;
+        })
+        .join('');
+
+      menuHtml = `
+        <div class="mt-2 w-full rounded-2xl bg-slate-900/95 border border-slate-700/90 shadow-2xl backdrop-blur p-2.5 text-slate-100 space-y-2">
+          <div class="flex items-center justify-between gap-2 px-1">
+            <div class="text-[11px] text-slate-400 font-semibold">
+              Tap to highlight • <span class="text-emerald-400">●</span> Saved (${savedCount})
+            </div>
+            <div class="flex items-center gap-1.5">
+              ${
+                selectedShape
+                  ? `<button id="bpTotalsShowAllBtn" type="button"
+                      class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-200">
+                      Show All
+                    </button>`
+                  : ''
+              }
+              ${
+                unsavedShapes.length > 0
+                  ? `<button id="bpTotalsSaveAllBtn" type="button" ${mState.isSaving ? 'disabled' : ''}
+                      class="px-2.5 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 text-[11px] font-extrabold">
+                      ${mState.isSaving ? 'Saving...' : `Save All (${unsavedShapes.length})`}
+                    </button>`
+                  : ''
+              }
+            </div>
+          </div>
+
+          <div class="max-h-[45vh] overflow-y-auto space-y-1.5 pr-0.5">
+            ${itemsHtml}
+          </div>
+        </div>
+      `;
+    }
+
+    wrap.innerHTML = `
+      <div class="flex items-center gap-1.5 max-w-full">
+        <button id="bpTotalsToggleBtn" type="button"
+          class="px-3.5 py-2 rounded-xl bg-slate-900/95 hover:bg-slate-800 border ${
+            selectedShape ? 'border-amber-400/70' : 'border-slate-700'
+          } shadow-xl backdrop-blur text-xs font-bold text-slate-100 flex items-center gap-2 max-w-full">
+          ${triggerLabel}
+          <span class="text-slate-400 text-[10px] shrink-0">${mState.totalsDropdownOpen ? '▲' : '▼'}</span>
+        </button>
+        ${
+          selectedShape
+            ? `<button id="bpTotalsQuickClearSelBtn" type="button" title="Clear highlight"
+                class="px-2.5 py-2 rounded-xl bg-slate-900/95 hover:bg-slate-800 border border-slate-700 shadow-xl text-xs font-bold text-slate-300 shrink-0">
+                All
+              </button>`
+            : ''
+        }
+      </div>
+      ${menuHtml}
+    `;
+
+    document.getElementById('bpTotalsToggleBtn').onclick = () => {
+      mState.totalsDropdownOpen = !mState.totalsDropdownOpen;
+      renderTopTotalsDropdown();
+    };
+
+    const quickAllBtn = document.getElementById('bpTotalsQuickClearSelBtn');
+    if (quickAllBtn) {
+      quickAllBtn.onclick = () => {
+        mState.selectedShapeId = null;
+        renderMeasureUI();
+      };
+    }
+
+    const showAllBtn = document.getElementById('bpTotalsShowAllBtn');
+    if (showAllBtn) {
+      showAllBtn.onclick = () => {
+        mState.selectedShapeId = null;
+        renderMeasureUI();
+      };
+    }
+
+    const saveAllBtn = document.getElementById('bpTotalsSaveAllBtn');
+    if (saveAllBtn) {
+      saveAllBtn.onclick = async () => {
+        await saveShapesToSupabase(unsavedShapes);
+      };
+    }
+
+    wrap.querySelectorAll('[data-select-shape]').forEach((btn) => {
+      btn.onclick = () => {
+        const id = btn.getAttribute('data-select-shape');
+        mState.selectedShapeId = mState.selectedShapeId === id ? null : id;
+        renderMeasureUI();
+      };
+    });
+
+    wrap.querySelectorAll('[data-save-shape]').forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-save-shape');
+        const sh = mState.shapes.find((item) => item.id === id);
+        if (sh) await saveShapesToSupabase([sh]);
+      };
+    });
+
+    wrap.querySelectorAll('[data-rename-shape]').forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-rename-shape');
+        const sh = mState.shapes.find((item) => item.id === id);
+        if (!sh) return;
+        const nextName = prompt('Label for this measurement (e.g. "North Wall", "Main Slab"):', sh.name || '');
+        if (nextName === null) return;
+        sh.name = nextName.trim();
+        await saveShapesToSupabase([sh], { silent: false });
+      };
+    });
+
+    wrap.querySelectorAll('[data-delete-shape]').forEach((btn) => {
+      btn.onclick = async (e) => {
+        e.stopPropagation();
+        const id = btn.getAttribute('data-delete-shape');
+        await deleteShapeById(id);
+      };
+    });
+  }
+
   function renderDock() {
     const dock = document.getElementById('bpMeasureDock');
     const s = getViewerState();
@@ -1068,9 +1645,11 @@
     const scale = mState.pageScale;
     const canCal = Boolean(s.canCalibrate);
 
-    // Determine primary readout from active shape or most recent shape
+    const selectedShape = mState.selectedShapeId
+      ? mState.shapes.find((sh) => sh.id === mState.selectedShapeId)
+      : null;
     const displayShape =
-      getActiveShape() || (mState.shapes.length > 0 ? mState.shapes[mState.shapes.length - 1] : null);
+      getActiveShape() || selectedShape || (mState.shapes.length > 0 ? mState.shapes[mState.shapes.length - 1] : null);
 
     let readoutHtml = '';
     if (!scale) {
@@ -1107,32 +1686,46 @@
       `;
     } else if (displayShape.type === 'distance') {
       const { totalFt, segments } = computeDistanceMetrics(displayShape.points, scale, displayShape.closed);
-      const headingLabel = displayShape.closed
+      const headingLabel = displayShape.name
+        ? displayShape.name
+        : displayShape.closed
         ? `Perimeter (${segments.length} sides)`
         : `Distance ${segments.length > 1 ? `(${segments.length} segments)` : ''}`;
+      const canSaveThis = displayShape.points.length >= 2 && !displayShape.saved;
+
       readoutHtml = `
         <div class="rounded-xl bg-slate-950/90 border border-sky-500/40 px-3.5 py-2 flex items-center justify-between gap-2">
-          <div>
-            <div class="text-[10px] uppercase tracking-wider text-sky-400 font-bold">
+          <div class="min-w-0">
+            <div class="text-[10px] uppercase tracking-wider text-sky-400 font-bold truncate">
               ${esc(headingLabel)}
             </div>
             <div class="text-lg font-extrabold text-white leading-tight">
               ${displayShape.points.length >= 2 ? `${esc(formatFeetInches(totalFt))} <span class="text-xs font-semibold text-slate-400">(${esc(formatDecimalFeet(totalFt))})</span>` : 'Tap 2nd point...'}
             </div>
           </div>
-          ${
-            displayShape.points.length >= 2 && mState.activeShapeId === displayShape.id && !displayShape.closed
-              ? `<button id="bpDockNewShapeBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 text-xs font-bold shrink-0">New Line</button>`
-              : ''
-          }
+          <div class="flex items-center gap-1.5 shrink-0">
+            ${
+              canSaveThis
+                ? `<button id="bpDockSaveCurrentBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-extrabold">Save</button>`
+                : ''
+            }
+            ${
+              displayShape.points.length >= 2 && mState.activeShapeId === displayShape.id && !displayShape.closed
+                ? `<button id="bpDockNewShapeBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 text-xs font-bold">New Line</button>`
+                : ''
+            }
+          </div>
         </div>
       `;
     } else {
       const { areaSqFt, perimeterFt } = computeAreaMetrics(displayShape.points, scale);
+      const canSaveThis = displayShape.points.length >= 3 && !displayShape.saved;
       readoutHtml = `
         <div class="rounded-xl bg-slate-950/90 border border-emerald-500/40 px-3.5 py-2 flex items-center justify-between gap-2">
-          <div>
-            <div class="text-[10px] uppercase tracking-wider text-emerald-400 font-bold">Surface Area</div>
+          <div class="min-w-0">
+            <div class="text-[10px] uppercase tracking-wider text-emerald-400 font-bold truncate">
+              ${esc(displayShape.name || 'Surface Area')}
+            </div>
             <div class="text-lg font-extrabold text-white leading-tight">
               ${
                 displayShape.points.length >= 3
@@ -1141,11 +1734,18 @@
               }
             </div>
           </div>
-          ${
-            displayShape.points.length >= 3 && !displayShape.closed
-              ? `<button id="bpDockFinishAreaBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 text-xs font-bold shrink-0">Finish</button>`
-              : ''
-          }
+          <div class="flex items-center gap-1.5 shrink-0">
+            ${
+              canSaveThis
+                ? `<button id="bpDockSaveCurrentBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-extrabold">Save</button>`
+                : ''
+            }
+            ${
+              displayShape.points.length >= 3 && !displayShape.closed
+                ? `<button id="bpDockFinishAreaBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-emerald-500/20 hover:bg-emerald-500/30 border border-emerald-400/40 text-emerald-200 text-xs font-bold">Finish</button>`
+                : ''
+            }
+          </div>
         </div>
       `;
     }
@@ -1165,7 +1765,9 @@
         </div>
       `;
 
+    const unsavedCount = mState.shapes.filter((sh) => !sh.saved && sh.points.length > 0).length;
     const hasAnyPoints = mState.shapes.some((sh) => sh.points.length > 0);
+    const activeTargetForUndo = getActiveShape() || mState.shapes.slice().reverse().find((sh) => !sh.saved);
 
     dock.innerHTML = `
       <div class="flex items-center justify-between gap-2">
@@ -1218,13 +1820,13 @@
         </div>
 
         <div class="flex items-center gap-1.5">
-          <button id="bpToolUndoBtn" type="button" ${!hasAnyPoints ? 'disabled' : ''}
+          <button id="bpToolUndoBtn" type="button" ${!activeTargetForUndo ? 'disabled' : ''}
             class="px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-xs font-bold text-slate-200">
             Undo
           </button>
           <button id="bpToolClearBtn" type="button" ${!hasAnyPoints ? 'disabled' : ''}
             class="px-2.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 disabled:opacity-40 border border-rose-500/30 text-xs font-bold text-rose-300">
-            Clear
+            ${unsavedCount > 0 && unsavedCount < mState.shapes.length ? 'Clear Unsaved' : 'Clear'}
           </button>
         </div>
       </div>
@@ -1259,6 +1861,16 @@
       renderDock();
     };
 
+    const saveCurrentBtn = document.getElementById('bpDockSaveCurrentBtn');
+    if (saveCurrentBtn && displayShape) {
+      saveCurrentBtn.onclick = async () => {
+        if (displayShape.type === 'area' && displayShape.points.length >= 3) {
+          displayShape.closed = true;
+        }
+        await saveShapesToSupabase([displayShape]);
+      };
+    }
+
     const newShapeBtn = document.getElementById('bpDockNewShapeBtn');
     if (newShapeBtn) {
       newShapeBtn.onclick = () => {
@@ -1277,7 +1889,7 @@
     }
 
     document.getElementById('bpToolUndoBtn').onclick = () => {
-      const target = getActiveShape() || mState.shapes[mState.shapes.length - 1];
+      const target = getActiveShape() || mState.shapes.slice().reverse().find((sh) => !sh.saved);
       if (!target) return;
       if (target.closed) {
         target.closed = false;
@@ -1289,6 +1901,7 @@
       if (target.points.length === 0) {
         mState.shapes = mState.shapes.filter((sh) => sh.id !== target.id);
         if (mState.activeShapeId === target.id) mState.activeShapeId = null;
+        if (mState.selectedShapeId === target.id) mState.selectedShapeId = null;
       } else {
         target.closed = false;
         mState.activeShapeId = target.id;
@@ -1296,10 +1909,57 @@
       renderMeasureUI();
     };
 
-    document.getElementById('bpToolClearBtn').onclick = () => {
-      mState.shapes = [];
-      mState.activeShapeId = null;
-      renderMeasureUI();
+    document.getElementById('bpToolClearBtn').onclick = async () => {
+      const unsaved = mState.shapes.filter((sh) => !sh.saved);
+      const saved = mState.shapes.filter((sh) => sh.saved);
+
+      if (unsaved.length > 0) {
+        if (!confirm(`Clear ${unsaved.length} unsaved measurement${unsaved.length === 1 ? '' : 's'} from this page?`)) {
+          return;
+        }
+        mState.shapes = saved;
+        mState.activeShapeId = null;
+        if (mState.selectedShapeId && !saved.some((sh) => sh.id === mState.selectedShapeId)) {
+          mState.selectedShapeId = null;
+        }
+        renderMeasureUI();
+        if (saved.length > 0) {
+          toast('Cleared unsaved measurements. Your saved measurements were kept.', 'info');
+        }
+        return;
+      }
+
+      if (saved.length > 0) {
+        if (
+          !confirm(
+            `Delete all ${saved.length} of your saved measurement${saved.length === 1 ? '' : 's'} on this page across all devices?`
+          )
+        ) {
+          return;
+        }
+        const idsToDelete = saved.map((sh) => sh.id);
+        mState.shapes = [];
+        mState.activeShapeId = null;
+        mState.selectedShapeId = null;
+        mState.totalsDropdownOpen = false;
+        updateLocalSavedCacheForCurrentPage();
+        renderMeasureUI();
+
+        const cur = getViewerState();
+        if (cur?.supabase && cur.isOnline) {
+          try {
+            const { error } = await cur.supabase
+              .from(USER_MEASURES_TABLE)
+              .delete()
+              .in('id', idsToDelete)
+              .eq('user_id', getCurrentUserId());
+            if (error) throw error;
+            toast('Deleted all saved measurements on this page.', 'info');
+          } catch (err) {
+            toast(`Removed locally (cloud delete warning: ${err.message})`, 'warning');
+          }
+        }
+      }
     };
   }
 
@@ -1315,6 +1975,7 @@
     }
 
     renderTopBanner();
+    renderTopTotalsDropdown();
     renderDock();
     renderOverlayGraphics();
   }
@@ -1390,6 +2051,11 @@
     const rawPt = clientToNorm(clientX, clientY);
     if (!rawPt) return;
 
+    // Close the top dropdown if the user starts tapping the drawing
+    if (mState.totalsDropdownOpen) {
+      mState.totalsDropdownOpen = false;
+    }
+
     // A. 2-Point Calibration mode
     if (mState.tool === 'calibrate') {
       if (!s.canCalibrate) return;
@@ -1419,13 +2085,18 @@
       return;
     }
 
+    // Clear highlight filter when actively placing new measurement points
+    mState.selectedShapeId = null;
+
     let shape = getActiveShape();
-    if (!shape || shape.type !== mState.tool || shape.closed) {
+    if (!shape || shape.type !== mState.tool || shape.closed || shape.saved) {
       shape = {
-        id: `m_${Date.now()}_${Math.random().toString(36).slice(2, 5)}`,
+        id: `m_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
         type: mState.tool,
         points: [],
-        closed: false
+        closed: false,
+        saved: false,
+        name: ''
       };
       mState.shapes.push(shape);
       mState.activeShapeId = shape.id;
@@ -1459,11 +2130,13 @@
     mState.active = next;
     if (!next) {
       mState.calPoints = [];
+      mState.selectedShapeId = null;
+      mState.totalsDropdownOpen = false;
       if (mState.tool === 'calibrate') mState.tool = 'distance';
       closeScaleModal();
       document.getElementById('bpCalLengthModal')?.classList.add('hidden');
     } else {
-      loadScaleForActivePage();
+      Promise.all([loadScaleForActivePage(), loadUserMeasurementsForActivePage()]);
     }
     renderMeasureUI();
   }
@@ -1472,13 +2145,22 @@
     setActive: setMeasureActive,
     onPageRendered() {
       mountIfReady();
-      const nextKey = getDocPageKey(getViewerState());
-      if (nextKey !== mState.currentDocKey) {
+      const s = getViewerState();
+      const nextDocKey = getDocPageKey(s);
+      const nextUserKey = getUserPageKey(s);
+      if (nextDocKey !== mState.currentDocKey || nextUserKey !== mState.currentUserPageKey) {
         mState.shapes = [];
         mState.activeShapeId = null;
+        mState.selectedShapeId = null;
+        mState.totalsDropdownOpen = false;
         mState.calPoints = [];
         if (mState.tool === 'calibrate') mState.tool = 'distance';
         loadScaleForActivePage();
+        if (mState.active) {
+          loadUserMeasurementsForActivePage();
+        } else {
+          mState.currentUserPageKey = '';
+        }
       } else {
         renderOverlayGraphics();
       }
@@ -1488,9 +2170,16 @@
     },
     onHeaderUpdated() {
       mountIfReady();
-      if (mState.active) renderDock();
+      if (mState.active) {
+        renderTopTotalsDropdown();
+        renderDock();
+      }
     },
     onViewerClosed() {
+      mState.currentUserPageKey = '';
+      mState.shapes = [];
+      mState.activeShapeId = null;
+      mState.selectedShapeId = null;
       setMeasureActive(false);
     }
   };
