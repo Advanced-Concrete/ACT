@@ -1973,6 +1973,7 @@ STRICT RULES:
     else applyStageTransform();
 
     renderCalloutOverlays();
+    window.ACTBlueprintMeasure?.onPageRendered?.();
     updateViewerHeaderBar();
     scheduleViewportDetailRender();
   }
@@ -2075,7 +2076,7 @@ STRICT RULES:
     if (!layer) return;
     layer.innerHTML = '';
     if (!bpState.activeDoc) return;
-    window.ACTBlueprintMeasure?.onPageRendered?.();
+   
 
     const pageLinks = bpState.calloutLinks.filter(
       (l) => l.sourceDocId === bpState.activeDoc.docId && Number(l.sourcePage) === Number(bpState.activePage)
@@ -3411,37 +3412,30 @@ STRICT RULES:
     syncRoleControls();
   }
 
-  window.ACTBlueprints = {
+ window.ACTBlueprints = {
     open: openBlueprintsView,
     close: closeBlueprintsView,
     openAdminSetup: openAdminDropboxSetupPage,
     rescanActivePage: () => scanActivePageForCallouts({ isManualRescan: true }),
-    refreshStatus: () => DropboxProxy.refreshStatus()
-    window.ACTBlueprints = {
-  open: openBlueprintsView,
-  close: closeBlueprintsView,
-  openAdminSetup: openAdminDropboxSetupPage,
-  rescanActivePage: () => scanActivePageForCallouts({ isManualRescan: true }),
-  refreshStatus: () => DropboxProxy.refreshStatus(),
-  _bridge: {
-    getState: () => ({
-      activeDoc: bpState.activeDoc,
-      activePage: bpState.activePage,
-      stageW: bpState.stageW,
-      stageH: bpState.stageH,
-      zoom: bpState.zoom,
-      panX: bpState.panX,
-      panY: bpState.panY,
-      isOpen: bpState.isOpen,
-      canCalibrate: canEditCallouts(),
-      userName: getActiveUserDisplayName(),
-      supabase: getSupabase(),
-      isOnline: isAppOnline()
-    }),
-    disableAddLinkMode: () => setAddLinkMode(false),
-    notify: (msg, type) => notify(msg, type)
-  }
-};
+    refreshStatus: () => DropboxProxy.refreshStatus(),
+    _bridge: {
+      getState: () => ({
+        activeDoc: bpState.activeDoc,
+        activePage: bpState.activePage,
+        stageW: bpState.stageW,
+        stageH: bpState.stageH,
+        zoom: bpState.zoom,
+        panX: bpState.panX,
+        panY: bpState.panY,
+        isOpen: bpState.isOpen,
+        canCalibrate: canEditCallouts(),
+        userName: getActiveUserDisplayName(),
+        supabase: getSupabase(),
+        isOnline: isAppOnline()
+      }),
+      disableAddLinkMode: () => setAddLinkMode(false),
+      notify: (msg, type) => notify(msg, type)
+    }
   };
 
   window.addEventListener('online', () => {
