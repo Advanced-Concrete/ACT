@@ -3412,7 +3412,7 @@ STRICT RULES:
     syncRoleControls();
   }
 
- window.ACTBlueprints = {
+window.ACTBlueprints = {
     open: openBlueprintsView,
     close: closeBlueprintsView,
     openAdminSetup: openAdminDropboxSetupPage,
