@@ -5,7 +5,8 @@
 //     Supervisor / PM / Admin: Calibrate & Recalibrate sheets (synced to Supabase)
 //     Crew:                    Measure Distance & Area on calibrated sheets (read-only scale)
 // - Desktop: Precision crosshair cursor while Measure Mode is active
-// - Tap to place points; drag anywhere to pan; pinch to zoom; drag dots to fine-tune
+// - Tap/click amber start dot (3+ pts) to close a Distance perimeter or Area loop
+// - Drag anywhere to pan; pinch to zoom; drag dots to fine-tune
 // =========================================================================
 (function initBlueprintMeasure() {
   'use strict';
@@ -148,13 +149,18 @@
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   }
 
-  function computeDistanceMetrics(points, scale) {
+  function computeDistanceMetrics(points, scale, closed = false) {
     if (!scale || points.length < 2) return { totalFt: 0, segments: [] };
     const segments = [];
     let totalFt = 0;
     for (let i = 0; i < points.length - 1; i++) {
       const len = distFeet(points[i], points[i + 1], scale);
       segments.push({ a: points[i], b: points[i + 1], len });
+      totalFt += len;
+    }
+    if (closed && points.length >= 3) {
+      const len = distFeet(points[points.length - 1], points[0], scale);
+      segments.push({ a: points[points.length - 1], b: points[0], len });
       totalFt += len;
     }
     return { totalFt, segments };
@@ -391,6 +397,10 @@
         touch-action: none;
         z-index: 35;
       }
+      .bp-m-handle.is-close-target {
+        cursor: pointer !important;
+        z-index: 38;
+      }
       .bp-m-handle.is-dragging {
         cursor: crosshair !important;
       }
@@ -400,6 +410,15 @@
         border-radius: 9999px;
         border: 2px solid #ffffff;
         box-shadow: 0 1px 4px rgba(0, 0, 0, 0.75);
+        transition: transform 120ms ease;
+      }
+      .bp-m-handle.is-close-target .bp-m-handle-dot {
+        width: 14px;
+        height: 14px;
+        box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.45), 0 1px 6px rgba(0, 0, 0, 0.85);
+      }
+      .bp-m-handle.is-close-target:hover .bp-m-handle-dot {
+        transform: scale(1.2);
       }
       .bp-m-handle.is-dragging .bp-m-handle-dot {
         width: 15px;
@@ -804,16 +823,35 @@
 
     const addHandle = (nx, ny, dotBg, meta) => {
       const h = document.createElement('div');
-      h.className = 'bp-m-handle';
+      h.className = meta.isCloseTarget ? 'bp-m-handle is-close-target' : 'bp-m-handle';
       h.style.left = `${(nx * 100).toFixed(4)}%`;
       h.style.top = `${(ny * 100).toFixed(4)}%`;
+      if (meta.isCloseTarget) {
+        h.title = 'Click to close & finish measurement';
+      }
       h.innerHTML = `<div class="bp-m-handle-dot" style="background:${dotBg};"></div>`;
+
+      // When drawing an open 3+ point Distance perimeter or Area, tapping/clicking
+      // the first point immediately closes & finishes the shape instead of dragging it
+      if (meta.isCloseTarget) {
+        h.addEventListener('pointerdown', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          const shape = mState.shapes.find((sh) => sh.id === meta.shapeId);
+          if (shape && !shape.closed && shape.points.length >= 3) {
+            shape.closed = true;
+            mState.activeShapeId = null;
+            renderMeasureUI();
+          }
+        });
+        htmlLayer.appendChild(h);
+        return;
+      }
 
       h.addEventListener('pointerdown', (e) => {
         e.stopPropagation();
         e.preventDefault();
         h.setPointerCapture(e.pointerId);
-        h.classList.add('is-dragging');
         const cur = getViewerState();
         mState.draggingHandle = {
           pointerId: e.pointerId,
@@ -836,7 +874,13 @@
         e.stopPropagation();
         const dxScreen = e.clientX - d.startClientX;
         const dyScreen = e.clientY - d.startClientY;
-        if (Math.hypot(dxScreen, dyScreen) > 3) d.moved = true;
+
+        // Require > 6px movement before dragging so normal clicks never nudge a dot
+        if (!d.moved) {
+          if (Math.hypot(dxScreen, dyScreen) <= 6) return;
+          d.moved = true;
+          d.el.classList.add('is-dragging');
+        }
 
         const nextX = Math.max(0, Math.min(1, d.origX + dxScreen / (d.zoom * d.stageW)));
         const nextY = Math.max(0, Math.min(1, d.origY + dyScreen / (d.zoom * d.stageH)));
@@ -860,16 +904,6 @@
         if (!d || d.pointerId !== e.pointerId) return;
         e.stopPropagation();
         d.el.classList.remove('is-dragging');
-
-        // Tap on the first corner of an open 3+ point Area shape closes it cleanly
-        if (!d.moved && d.meta.kind === 'shape' && d.meta.idx === 0) {
-          const shape = mState.shapes.find((sh) => sh.id === d.meta.shapeId);
-          if (shape && shape.type === 'area' && !shape.closed && shape.points.length >= 3) {
-            shape.closed = true;
-            mState.activeShapeId = null;
-            renderMeasureUI();
-          }
-        }
         mState.draggingHandle = null;
       };
 
@@ -905,7 +939,7 @@
       if (!pts.length) continue;
 
       if (shape.type === 'distance') {
-        const { segments } = computeDistanceMetrics(pts, scale);
+        const { segments } = computeDistanceMetrics(pts, scale, shape.closed);
         for (const seg of segments) {
           addSvgEl('line', {
             x1: seg.a.x * W,
@@ -927,7 +961,14 @@
           }
         }
         pts.forEach((pt, idx) => {
-          addHandle(pt.x, pt.y, '#0284c7', { kind: 'shape', shapeId: shape.id, idx });
+          const isStartCloseable =
+            idx === 0 && !shape.closed && shape.id === mState.activeShapeId && pts.length >= 3;
+          addHandle(pt.x, pt.y, isStartCloseable ? '#f59e0b' : '#0284c7', {
+            kind: 'shape',
+            shapeId: shape.id,
+            idx,
+            isCloseTarget: isStartCloseable
+          });
         });
       } else if (shape.type === 'area') {
         const { areaSqFt, edges, centroid } = computeAreaMetrics(pts, scale);
@@ -967,11 +1008,13 @@
           );
         }
         pts.forEach((pt, idx) => {
-          const isStartCloseable = idx === 0 && !shape.closed && pts.length >= 3;
+          const isStartCloseable =
+            idx === 0 && !shape.closed && shape.id === mState.activeShapeId && pts.length >= 3;
           addHandle(pt.x, pt.y, isStartCloseable ? '#f59e0b' : '#10b981', {
             kind: 'shape',
             shapeId: shape.id,
-            idx
+            idx,
+            isCloseTarget: isStartCloseable
           });
         });
       }
@@ -1057,25 +1100,28 @@
         <div class="rounded-xl bg-slate-950/80 border border-slate-800 px-3 py-2 text-xs text-slate-300">
           ${
             mState.tool === 'distance'
-              ? 'Tap two or more points on the drawing to measure distance.'
+              ? 'Tap two or more points to measure distance (tap the first dot again to close a perimeter).'
               : 'Tap 3 or more corners around an area to calculate square footage.'
           }
         </div>
       `;
     } else if (displayShape.type === 'distance') {
-      const { totalFt } = computeDistanceMetrics(displayShape.points, scale);
+      const { totalFt, segments } = computeDistanceMetrics(displayShape.points, scale, displayShape.closed);
+      const headingLabel = displayShape.closed
+        ? `Perimeter (${segments.length} sides)`
+        : `Distance ${segments.length > 1 ? `(${segments.length} segments)` : ''}`;
       readoutHtml = `
         <div class="rounded-xl bg-slate-950/90 border border-sky-500/40 px-3.5 py-2 flex items-center justify-between gap-2">
           <div>
             <div class="text-[10px] uppercase tracking-wider text-sky-400 font-bold">
-              Distance ${displayShape.points.length > 2 ? `(${displayShape.points.length - 1} segments)` : ''}
+              ${esc(headingLabel)}
             </div>
             <div class="text-lg font-extrabold text-white leading-tight">
               ${displayShape.points.length >= 2 ? `${esc(formatFeetInches(totalFt))} <span class="text-xs font-semibold text-slate-400">(${esc(formatDecimalFeet(totalFt))})</span>` : 'Tap 2nd point...'}
             </div>
           </div>
           ${
-            displayShape.points.length >= 2 && mState.activeShapeId === displayShape.id
+            displayShape.points.length >= 2 && mState.activeShapeId === displayShape.id && !displayShape.closed
               ? `<button id="bpDockNewShapeBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 text-xs font-bold shrink-0">New Line</button>`
               : ''
           }
@@ -1184,7 +1230,7 @@
       </div>
 
       <div class="text-[10px] text-slate-500 text-center">
-        Reference only — verify critical dimensions against printed callouts. Drag any dot to fine-tune.
+        Reference only — verify critical dimensions against printed callouts. Tap amber start dot to close loop, or drag dots to fine-tune.
       </div>
     `;
 
@@ -1233,6 +1279,12 @@
     document.getElementById('bpToolUndoBtn').onclick = () => {
       const target = getActiveShape() || mState.shapes[mState.shapes.length - 1];
       if (!target) return;
+      if (target.closed) {
+        target.closed = false;
+        mState.activeShapeId = target.id;
+        renderMeasureUI();
+        return;
+      }
       target.points.pop();
       if (target.points.length === 0) {
         mState.shapes = mState.shapes.filter((sh) => sh.id !== target.id);
