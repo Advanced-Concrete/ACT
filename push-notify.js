@@ -725,7 +725,7 @@
             <h2 class="text-lg font-extrabold text-white flex items-center gap-2">
               <span>📣</span> Push Notifications
             </h2>
-            <p class="text-xs text-slate-400">24h post-CSV delay • Mondays 8:00 AM Central • Direct alerts</p>
+            <p class="text-xs text-slate-400">24h post-CSV alert • +48h follow-up • Direct alerts</p>
           </div>
           <div class="flex items-center gap-2">
             <button id="actPushModalRefresh" type="button"
@@ -789,48 +789,67 @@
     const { employees, subsByEmp, missingGroups, dismissedLines, settings, logs } = adminDataCache;
     const autoOn = settings.auto_remind_enabled !== false;
     const pendingCsv = settings.pending_csv_alert_at;
+ const pendingFollowup = !pendingCsv ? settings.pending_followup_alert_at : null;
 
-    const pendingBannerHtml = pendingCsv
-      ? `
-        <div class="rounded-xl bg-amber-500/15 border border-amber-400/40 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div class="text-xs text-amber-100">
-            <div class="font-bold text-sm text-amber-300">24-Hour Post-CSV Alert Queued</div>
-            Scheduled to fire automatically on <strong>${esc(formatDateTime(pendingCsv))}</strong>.
-          </div>
-          <div class="flex items-center gap-2 shrink-0">
-            <button id="actPushSendCsvNowBtn" type="button"
-              class="px-3 py-2 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs">
-              Send Now
-            </button>
-            <button id="actPushCancelCsvTimerBtn" type="button"
-              class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs border border-slate-600">
-              Cancel Timer
-            </button>
-          </div>
-        </div>
-      `
-      : '';
+ const pendingBannerHtml = pendingCsv
+   ? `
+     <div class="rounded-xl bg-amber-500/15 border border-amber-400/40 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+       <div class="text-xs text-amber-100">
+         <div class="font-bold text-sm text-amber-300">24-Hour Post-CSV Alert Queued</div>
+         Scheduled to fire on <strong>${esc(formatDateTime(pendingCsv))}</strong> (followed by a +48h reminder for any still missing).
+       </div>
+       <div class="flex items-center gap-2 shrink-0">
+         <button id="actPushSendCsvNowBtn" type="button"
+           class="px-3 py-2 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs">
+           Send Now
+         </button>
+         <button id="actPushCancelCsvTimerBtn" type="button"
+           class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs border border-slate-600">
+           Cancel Timer
+         </button>
+       </div>
+     </div>
+   `
+   : pendingFollowup
+   ? `
+     <div class="rounded-xl bg-amber-500/15 border border-amber-400/40 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+       <div class="text-xs text-amber-100">
+         <div class="font-bold text-sm text-amber-300">48-Hour Follow-Up Alert Queued</div>
+         Final reminder scheduled for <strong>${esc(formatDateTime(pendingFollowup))}</strong> (only for remaining missing receipts).
+       </div>
+       <div class="flex items-center gap-2 shrink-0">
+         <button id="actPushSendFollowupNowBtn" type="button"
+           class="px-3 py-2 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs">
+           Send Now
+         </button>
+         <button id="actPushCancelFollowupTimerBtn" type="button"
+           class="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold text-xs border border-slate-600">
+           Cancel Follow-Up
+         </button>
+       </div>
+     </div>
+   `
+   : '';
 
-    const scheduleCardHtml = `
-      <div class="rounded-xl bg-slate-800/70 border border-slate-700 p-3.5 flex items-center justify-between gap-3">
-        <div>
-          <div class="text-sm font-bold text-white">Automatic Reminders</div>
-          <div class="text-xs text-slate-400">
-            24h after CSV upload + Mondays at 8:00 AM Central
-            ${settings.last_auto_sent_at ? ` • Last auto-sent ${esc(formatDateTime(settings.last_auto_sent_at))}` : ''}
-          </div>
-        </div>
-        <button id="actPushAutoToggleBtn" type="button"
-          class="shrink-0 px-3.5 py-2 rounded-xl font-bold text-xs transition ${
-            autoOn
-              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30'
-              : 'bg-slate-700 text-slate-300 border border-slate-600 hover:bg-slate-600'
-          }">
-          ${autoOn ? 'Auto: ON' : 'Auto: PAUSED'}
-        </button>
-      </div>
-    `;
-
+ const scheduleCardHtml = `
+   <div class="rounded-xl bg-slate-800/70 border border-slate-700 p-3.5 flex items-center justify-between gap-3">
+     <div>
+       <div class="text-sm font-bold text-white">Automatic Reminders</div>
+       <div class="text-xs text-slate-400">
+         24h after CSV upload + 48h follow-up
+         ${settings.last_auto_sent_at ? ` • Last auto-sent ${esc(formatDateTime(settings.last_auto_sent_at))}` : ''}
+       </div>
+     </div>
+     <button id="actPushAutoToggleBtn" type="button"
+       class="shrink-0 px-3.5 py-2 rounded-xl font-bold text-xs transition ${
+         autoOn
+           ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 hover:bg-emerald-500/30'
+           : 'bg-slate-700 text-slate-300 border border-slate-600 hover:bg-slate-600'
+       }">
+       ${autoOn ? 'Auto: ON' : 'Auto: PAUSED'}
+     </button>
+   </div>
+ `;
     const tabsHtml = `
       <div class="grid grid-cols-3 gap-2 p-1 rounded-xl bg-slate-950/70 border border-slate-800">
         <button data-push-tab="missing" type="button"
@@ -1161,6 +1180,45 @@
         await renderAdminPushModalBody(true);
       };
     }
+   
+    // 48h follow-up timer actions
+ const sendFollowupNowBtn = document.getElementById('actPushSendFollowupNowBtn');
+ if (sendFollowupNowBtn) {
+   sendFollowupNowBtn.onclick = async () => {
+     if (!confirm('Send the 48-hour follow-up alert now to everyone still missing a receipt and clear the timer?')) return;
+     sendFollowupNowBtn.disabled = true;
+     sendFollowupNowBtn.textContent = 'Sending...';
+     try {
+       const res = await invokePushEdgeFunction({
+         mode: 'group_missing',
+         clear_pending_followup_timer: true
+       });
+       notifyToast(`Sent ${res.stats?.delivered || 0} follow-up alert(s) to ${res.stats?.targetEmployees || 0} cardholder(s).`, false);
+       await renderAdminPushModalBody(true);
+     } catch (err) {
+       notifyToast(err.message || 'Failed to send follow-up alerts.', true);
+       sendFollowupNowBtn.disabled = false;
+       sendFollowupNowBtn.textContent = 'Send Now';
+     }
+   };
+ }
+
+ const cancelFollowupBtn = document.getElementById('actPushCancelFollowupTimerBtn');
+ if (cancelFollowupBtn && client) {
+   cancelFollowupBtn.onclick = async () => {
+     if (!confirm('Cancel the queued 48-hour follow-up alert?')) return;
+     const { error } = await client
+       .from('push_settings')
+       .update({ pending_followup_alert_at: null, updated_at: new Date().toISOString() })
+       .eq('id', 'default');
+     if (error) {
+       notifyToast(`Failed to cancel follow-up: ${error.message}`, true);
+       return;
+     }
+     notifyToast('48-hour follow-up alert cancelled.', false);
+     await renderAdminPushModalBody(true);
+   };
+ }
 
     // Expand / collapse employee missing lines
     document.querySelectorAll('[data-expand-emp]').forEach((btn) => {
