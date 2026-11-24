@@ -2067,6 +2067,7 @@ STRICT RULES:
     }
     const zoomLabel = document.getElementById('bpZoomPercentLabel');
     if (zoomLabel) zoomLabel.textContent = `${Math.round(bpState.zoom * 100)}%`;
+    window.ACTBlueprintMeasure?.onTransformChanged?.(bpState.zoom);
   }
 
   function renderCalloutOverlays() {
@@ -2074,6 +2075,7 @@ STRICT RULES:
     if (!layer) return;
     layer.innerHTML = '';
     if (!bpState.activeDoc) return;
+    window.ACTBlueprintMeasure?.onPageRendered?.();
 
     const pageLinks = bpState.calloutLinks.filter(
       (l) => l.sourceDocId === bpState.activeDoc.docId && Number(l.sourcePage) === Number(bpState.activePage)
@@ -2137,6 +2139,7 @@ STRICT RULES:
     viewport.addEventListener('pointerdown', (e) => {
       if (!bpState.activeDoc || !bpState.isOpen) return;
       if (e.target.closest('.bp-callout-badge') || e.target.closest('button')) return;
+      if (e.target.closest('[data-bp-measure-ui]') || e.target.closest('.bp-m-handle')) return;
 
       viewport.setPointerCapture(e.pointerId);
       bpState.activePointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -2765,6 +2768,7 @@ STRICT RULES:
     if (bpState.addLinkMode) {
       btn?.classList.add('bg-amber-500', 'text-slate-950');
       banner?.classList.remove('hidden');
+      window.ACTBlueprintMeasure?.setActive?.(false);
     } else {
       btn?.classList.remove('bg-amber-500', 'text-slate-950');
       banner?.classList.add('hidden');
@@ -2825,6 +2829,7 @@ STRICT RULES:
       backBtn?.classList.add('hidden');
       backBtn?.classList.remove('flex');
     }
+    window.ACTBlueprintMeasure?.onHeaderUpdated?.();
   }
 
   function positionBlueprintsSection() {
@@ -2877,6 +2882,7 @@ STRICT RULES:
   function closeBlueprintsView() {
     bpState.isOpen = false;
     setAddLinkMode(false);
+    window.ACTBlueprintMeasure?.onViewerClosed?.();
     document.getElementById('viewBlueprints')?.classList.add('hidden');
     document.getElementById('bpDropboxModal')?.classList.add('hidden');
     document.getElementById('bpCalloutModal')?.classList.add('hidden');
@@ -3411,6 +3417,31 @@ STRICT RULES:
     openAdminSetup: openAdminDropboxSetupPage,
     rescanActivePage: () => scanActivePageForCallouts({ isManualRescan: true }),
     refreshStatus: () => DropboxProxy.refreshStatus()
+    window.ACTBlueprints = {
+  open: openBlueprintsView,
+  close: closeBlueprintsView,
+  openAdminSetup: openAdminDropboxSetupPage,
+  rescanActivePage: () => scanActivePageForCallouts({ isManualRescan: true }),
+  refreshStatus: () => DropboxProxy.refreshStatus(),
+  _bridge: {
+    getState: () => ({
+      activeDoc: bpState.activeDoc,
+      activePage: bpState.activePage,
+      stageW: bpState.stageW,
+      stageH: bpState.stageH,
+      zoom: bpState.zoom,
+      panX: bpState.panX,
+      panY: bpState.panY,
+      isOpen: bpState.isOpen,
+      canCalibrate: canEditCallouts(),
+      userName: getActiveUserDisplayName(),
+      supabase: getSupabase(),
+      isOnline: isAppOnline()
+    }),
+    disableAddLinkMode: () => setAddLinkMode(false),
+    notify: (msg, type) => notify(msg, type)
+  }
+};
   };
 
   window.addEventListener('online', () => {
