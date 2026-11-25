@@ -6,6 +6,7 @@
 //     Admin:      View Month/Day + Add/Edit/Remove company calendar feeds
 //     PM / Supv:  View Month/Day + filter calendars (read-only)
 //     Crew:       Hidden in menu & blocked on client + server
+// - Full-bleed hairline Month grid (Google Calendar style) + clean Day view
 // - Offline cache in localStorage for field reference when signal drops
 // =========================================================================
 (function initACTCalendar() {
@@ -16,14 +17,14 @@
   const HIDDEN_CALS_KEY = 'act_company_calendar_hidden_v1';
 
   const COLOR_STYLES = {
-    sky:     { name: 'Blue',   dot: 'bg-sky-400',     pill: 'bg-sky-500/20 text-sky-200 border-sky-400/40',       bar: 'bg-sky-400',     chipOn: 'bg-sky-500/20 text-sky-200 border-sky-400/50' },
-    emerald: { name: 'Green',  dot: 'bg-emerald-400', pill: 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40', bar: 'bg-emerald-400', chipOn: 'bg-emerald-500/20 text-emerald-200 border-emerald-400/50' },
-    amber:   { name: 'Amber',  dot: 'bg-amber-400',   pill: 'bg-amber-500/20 text-amber-200 border-amber-400/40',   bar: 'bg-amber-400',   chipOn: 'bg-amber-500/20 text-amber-200 border-amber-400/50' },
-    rose:    { name: 'Red',    dot: 'bg-rose-400',    pill: 'bg-rose-500/20 text-rose-200 border-rose-400/40',      bar: 'bg-rose-400',    chipOn: 'bg-rose-500/20 text-rose-200 border-rose-400/50' },
-    violet:  { name: 'Purple', dot: 'bg-violet-400',  pill: 'bg-violet-500/20 text-violet-200 border-violet-400/40', bar: 'bg-violet-400',  chipOn: 'bg-violet-500/20 text-violet-200 border-violet-400/50' },
-    orange:  { name: 'Orange', dot: 'bg-orange-400',  pill: 'bg-orange-500/20 text-orange-200 border-orange-400/40', bar: 'bg-orange-400',  chipOn: 'bg-orange-500/20 text-orange-200 border-orange-400/50' },
-    cyan:    { name: 'Teal',   dot: 'bg-cyan-400',    pill: 'bg-cyan-500/20 text-cyan-200 border-cyan-400/40',      bar: 'bg-cyan-400',    chipOn: 'bg-cyan-500/20 text-cyan-200 border-cyan-400/50' },
-    slate:   { name: 'Gray',   dot: 'bg-slate-400',   pill: 'bg-slate-500/25 text-slate-200 border-slate-400/40',   bar: 'bg-slate-400',   chipOn: 'bg-slate-600/40 text-slate-100 border-slate-400/50' }
+    sky:     { name: 'Blue',   dot: 'bg-sky-400',     eventBar: 'bg-sky-600 text-white',         pill: 'bg-sky-500/20 text-sky-200 border-sky-400/40',           bar: 'bg-sky-400',     chipOn: 'bg-sky-500/20 text-sky-200 border-sky-400/50' },
+    emerald: { name: 'Green',  dot: 'bg-emerald-400', eventBar: 'bg-emerald-600 text-white',     pill: 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40', bar: 'bg-emerald-400', chipOn: 'bg-emerald-500/20 text-emerald-200 border-emerald-400/50' },
+    amber:   { name: 'Amber',  dot: 'bg-amber-400',   eventBar: 'bg-amber-500 text-slate-950',   pill: 'bg-amber-500/20 text-amber-200 border-amber-400/40',     bar: 'bg-amber-400',   chipOn: 'bg-amber-500/20 text-amber-200 border-amber-400/50' },
+    rose:    { name: 'Red',    dot: 'bg-rose-400',    eventBar: 'bg-rose-600 text-white',        pill: 'bg-rose-500/20 text-rose-200 border-rose-400/40',        bar: 'bg-rose-400',    chipOn: 'bg-rose-500/20 text-rose-200 border-rose-400/50' },
+    violet:  { name: 'Purple', dot: 'bg-violet-400',  eventBar: 'bg-violet-600 text-white',      pill: 'bg-violet-500/20 text-violet-200 border-violet-400/40',  bar: 'bg-violet-400',  chipOn: 'bg-violet-500/20 text-violet-200 border-violet-400/50' },
+    orange:  { name: 'Orange', dot: 'bg-orange-400',  eventBar: 'bg-orange-600 text-white',      pill: 'bg-orange-500/20 text-orange-200 border-orange-400/40',  bar: 'bg-orange-400',  chipOn: 'bg-orange-500/20 text-orange-200 border-orange-400/50' },
+    cyan:    { name: 'Teal',   dot: 'bg-cyan-400',    eventBar: 'bg-teal-600 text-white',        pill: 'bg-cyan-500/20 text-cyan-200 border-cyan-400/40',        bar: 'bg-cyan-400',    chipOn: 'bg-cyan-500/20 text-cyan-200 border-cyan-400/50' },
+    slate:   { name: 'Gray',   dot: 'bg-slate-400',   eventBar: 'bg-slate-600 text-white',       pill: 'bg-slate-500/25 text-slate-200 border-slate-400/40',     bar: 'bg-slate-400',   chipOn: 'bg-slate-600/40 text-slate-100 border-slate-400/50' }
   };
 
   const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -145,9 +146,19 @@
     return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
   }
 
-  function formatMonthHeading(year, month) {
+  function formatTimeCompact(iso) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const h = d.getHours();
+    const m = d.getMinutes();
+    const ampm = h >= 12 ? 'p' : 'a';
+    const h12 = h % 12 || 12;
+    return m === 0 ? `${h12}${ampm}` : `${h12}:${pad2(m)}${ampm}`;
+  }
+
+  function formatMonthHeading(year, month, shortMonth = false) {
     return new Date(year, month, 1).toLocaleDateString('en-US', {
-      month: 'long',
+      month: shortMonth ? 'short' : 'long',
       year: 'numeric'
     });
   }
@@ -163,11 +174,12 @@
   }
 
   function getEventsForDay(ymd) {
-    const dayStart = parseYmdLocal(ymd).getTime();
+    const dayDate = parseYmdLocal(ymd);
+    const dayStart = dayDate.getTime();
     const dayEnd = new Date(
-      parseYmdLocal(ymd).getFullYear(),
-      parseYmdLocal(ymd).getMonth(),
-      parseYmdLocal(ymd).getDate() + 1,
+      dayDate.getFullYear(),
+      dayDate.getMonth(),
+      dayDate.getDate() + 1,
       0,
       0,
       0,
@@ -283,8 +295,44 @@
   }
 
   // =========================================================================
-  // 4. DOM INJECTION (SIDE MENU BUTTON + MAIN VIEW + MODALS)
+  // 4. DOM INJECTION (STYLES + SIDE MENU BUTTON + MAIN VIEW + MODALS)
   // =========================================================================
+  function injectCalendarStyles() {
+    if (document.getElementById('actCalStyles')) return;
+    const style = document.createElement('style');
+    style.id = 'actCalStyles';
+    style.textContent = `
+      .act-cal-no-scrollbar::-webkit-scrollbar { display: none; }
+      .act-cal-no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+      .act-cal-month-bar {
+        display: block;
+        width: 100%;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: clip;
+        padding: 1px 3px;
+        border-radius: 3px;
+        font-size: 10px;
+        line-height: 1.3;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+      }
+      @media (min-width: 640px) {
+        .act-cal-month-bar {
+          padding: 2px 5px;
+          border-radius: 4px;
+          font-size: 11px;
+          text-overflow: ellipsis;
+          letter-spacing: 0;
+        }
+      }
+      #viewCompanyCalendar {
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
   function ensureMenuButton() {
     let btn = document.getElementById('menuFeatCalendar');
     if (!btn) {
@@ -326,6 +374,7 @@
   }
 
   function ensureCalendarView() {
+    injectCalendarStyles();
     let view = document.getElementById('viewCompanyCalendar');
     if (view) return view;
 
@@ -334,8 +383,8 @@
     view.className =
       'hidden fixed inset-x-0 bottom-0 z-30 bg-slate-950 text-slate-100 flex flex-col overflow-hidden';
     view.innerHTML = `
-      <div id="actCalToolbar" class="shrink-0 bg-slate-900 border-b border-slate-800 px-3 py-2.5 space-y-2.5"></div>
-      <div id="actCalBody" class="flex-1 overflow-y-auto p-3 sm:p-4"></div>
+      <div id="actCalToolbar" class="shrink-0 bg-slate-900/95 border-b border-slate-800 px-2.5 sm:px-3 py-2 space-y-1.5"></div>
+      <div id="actCalBody" class="flex-1 min-h-0 flex flex-col overflow-y-auto"></div>
     `;
     document.body.appendChild(view);
 
@@ -398,91 +447,98 @@
   }
 
   // =========================================================================
-  // 5. RENDERING: TOOLBAR, MONTH VIEW & DAY VIEW
+  // 5. RENDERING: COMPACT TOOLBAR, FULL-BLEED MONTH GRID & DAY VIEW
   // =========================================================================
   function renderToolbar() {
     const bar = document.getElementById('actCalToolbar');
     if (!bar) return;
 
-    const heading =
+    const headingFull =
       calState.viewMode === 'month'
-        ? formatMonthHeading(calState.cursorYear, calState.cursorMonth)
+        ? formatMonthHeading(calState.cursorYear, calState.cursorMonth, false)
+        : formatDayHeading(calState.selectedDateStr);
+    const headingShort =
+      calState.viewMode === 'month'
+        ? formatMonthHeading(calState.cursorYear, calState.cursorMonth, true)
         : formatDayHeading(calState.selectedDateStr);
 
-    const chipsHtml = calState.calendars.length
-      ? `
-        <div class="flex items-center gap-1.5 overflow-x-auto pb-0.5">
-          ${calState.calendars
-            .map((c) => {
-              const st = getColorStyle(c.color);
-              const isHidden = calState.hiddenCalendarIds.has(c.id);
-              return `
-                <button type="button" data-cal-filter="${esc(c.id)}"
-                  class="px-2.5 py-1.5 rounded-xl border text-xs font-bold flex items-center gap-1.5 shrink-0 transition ${
-                    isHidden
-                      ? 'bg-slate-950 text-slate-500 border-slate-800 line-through'
-                      : st.chipOn
-                  }">
-                  <span class="w-2 h-2 rounded-full ${isHidden ? 'bg-slate-600' : st.dot}"></span>
-                  <span>${esc(c.name)}</span>
-                </button>
-              `;
-            })
-            .join('')}
-        </div>
-      `
-      : '';
+    const chipsHtml = calState.calendars
+      .map((c) => {
+        const st = getColorStyle(c.color);
+        const isHidden = calState.hiddenCalendarIds.has(c.id);
+        return `
+          <button type="button" data-cal-filter="${esc(c.id)}"
+            class="h-7 px-2.5 rounded-lg border text-[11px] font-bold flex items-center gap-1.5 shrink-0 transition ${
+              isHidden
+                ? 'bg-slate-950 text-slate-500 border-slate-800 line-through'
+                : st.chipOn
+            }">
+            <span class="w-2 h-2 rounded-full ${isHidden ? 'bg-slate-600' : st.dot}"></span>
+            <span>${esc(c.name)}</span>
+          </button>
+        `;
+      })
+      .join('');
 
     bar.innerHTML = `
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <div class="flex items-center gap-1.5">
-          <button id="actCalPrevBtn" type="button"
-            class="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-base font-bold text-white flex items-center justify-center">
+      <div class="flex items-center justify-between gap-2">
+        <div class="flex items-center gap-1 min-w-0">
+          <button id="actCalPrevBtn" type="button" aria-label="Previous"
+            class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700/80 text-base font-bold text-white flex items-center justify-center shrink-0">
             ‹
           </button>
-          <button id="actCalTodayBtn" type="button"
-            class="px-3 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-slate-200">
-            Today
-          </button>
-          <button id="actCalNextBtn" type="button"
-            class="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-base font-bold text-white flex items-center justify-center">
+          <button id="actCalNextBtn" type="button" aria-label="Next"
+            class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700/80 text-base font-bold text-white flex items-center justify-center shrink-0">
             ›
           </button>
-          <h2 class="text-sm sm:text-base font-extrabold text-white ml-1.5 truncate">${esc(heading)}</h2>
+          <h2 class="text-sm sm:text-base font-extrabold text-white ml-1 truncate">
+            <span class="sm:hidden">${esc(headingShort)}</span>
+            <span class="hidden sm:inline">${esc(headingFull)}</span>
+          </h2>
         </div>
 
-        <div class="flex items-center gap-1.5">
-          <div class="inline-flex p-0.5 rounded-xl bg-slate-950 border border-slate-800">
-            <button id="actCalModeMonthBtn" type="button"
-              class="px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                calState.viewMode === 'month' ? 'bg-sky-500 text-slate-950' : 'text-slate-300 hover:text-white'
-              }">
-              Month
-            </button>
-            <button id="actCalModeDayBtn" type="button"
-              class="px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                calState.viewMode === 'day' ? 'bg-sky-500 text-slate-950' : 'text-slate-300 hover:text-white'
-              }">
-              Day
-            </button>
-          </div>
-
+        <div class="flex items-center gap-1.5 shrink-0">
+          <button id="actCalTodayBtn" type="button"
+            class="h-8 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700/80 text-xs font-bold text-slate-200">
+            Today
+          </button>
           <button id="actCalRefreshBtn" type="button" title="Refresh calendars" ${calState.loading ? 'disabled' : ''}
-            class="h-9 px-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 border border-slate-700 text-xs font-bold text-slate-200">
+            class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 border border-slate-700/80 text-xs font-bold text-slate-200 flex items-center justify-center">
             ${calState.loading ? '…' : '↻'}
           </button>
-
           ${
             isAdminUser()
               ? `<button id="actCalManageBtn" type="button"
-                  class="h-9 px-3 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-400/40 text-xs font-bold text-indigo-200">
-                  ⚙ Feeds
+                  class="h-8 px-2.5 rounded-lg bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-400/40 text-xs font-bold text-indigo-200 flex items-center gap-1">
+                  <span>⚙</span><span class="hidden sm:inline">Feeds</span>
                 </button>`
               : ''
           }
         </div>
       </div>
-      ${chipsHtml}
+
+      <div class="flex items-center gap-2">
+        <div class="inline-flex p-0.5 rounded-lg bg-slate-950 border border-slate-800 shrink-0">
+          <button id="actCalModeMonthBtn" type="button"
+            class="px-2.5 py-1 rounded-md text-[11px] font-bold transition ${
+              calState.viewMode === 'month' ? 'bg-sky-500 text-slate-950' : 'text-slate-300 hover:text-white'
+            }">
+            Month
+          </button>
+          <button id="actCalModeDayBtn" type="button"
+            class="px-2.5 py-1 rounded-md text-[11px] font-bold transition ${
+              calState.viewMode === 'day' ? 'bg-sky-500 text-slate-950' : 'text-slate-300 hover:text-white'
+            }">
+            Day
+          </button>
+        </div>
+
+        ${
+          chipsHtml
+            ? `<div class="act-cal-no-scrollbar flex-1 min-w-0 flex items-center gap-1.5 overflow-x-auto">${chipsHtml}</div>`
+            : ''
+        }
+      </div>
     `;
 
     document.getElementById('actCalPrevBtn').onclick = () => navigateCalendar(-1);
@@ -552,7 +608,7 @@
 
     const bannerHtml = statusNotes.length
       ? `
-        <div class="mb-3 rounded-xl bg-amber-500/15 border border-amber-400/40 px-3.5 py-2.5 text-xs text-amber-200 space-y-1">
+        <div class="shrink-0 mx-2.5 my-2 rounded-xl bg-amber-500/15 border border-amber-400/40 px-3 py-2 text-xs text-amber-200 space-y-0.5">
           ${statusNotes.map((w) => `<div>${esc(w)}</div>`).join('')}
         </div>
       `
@@ -566,24 +622,26 @@
     if (calState.calendars.length === 0 && !calState.loading) {
       body.innerHTML = `
         ${bannerHtml}
-        <div class="max-w-md mx-auto mt-10 rounded-2xl bg-slate-900 border border-slate-800 p-6 text-center space-y-3">
-          <div class="text-3xl">📅</div>
-          <h3 class="text-base font-extrabold text-white">No Company Calendars Connected Yet</h3>
-          <p class="text-xs text-slate-400">
+        <div class="p-4">
+          <div class="max-w-md mx-auto mt-8 rounded-2xl bg-slate-900 border border-slate-800 p-6 text-center space-y-3">
+            <div class="text-3xl">📅</div>
+            <h3 class="text-base font-extrabold text-white">No Company Calendars Connected Yet</h3>
+            <p class="text-xs text-slate-400">
+              ${
+                isAdminUser()
+                  ? 'Add one or more read-only iCloud Public Calendar links so Supervisors, PMs, and Admins can view schedules across all devices.'
+                  : 'Ask an ACT Administrator to add the company iCloud calendar feed(s).'
+              }
+            </p>
             ${
               isAdminUser()
-                ? 'Add one or more read-only iCloud Public Calendar links so Supervisors, PMs, and Admins can view schedules across all devices.'
-                : 'Ask an ACT Administrator to add the company iCloud calendar feed(s).'
+                ? `<button id="actCalEmptyAddBtn" type="button"
+                    class="px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-xs">
+                    + Add iCloud Calendar
+                  </button>`
+                : ''
             }
-          </p>
-          ${
-            isAdminUser()
-              ? `<button id="actCalEmptyAddBtn" type="button"
-                  class="px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-xs">
-                  + Add iCloud Calendar
-                </button>`
-              : ''
-          }
+          </div>
         </div>
       `;
       const addBtn = document.getElementById('actCalEmptyAddBtn');
@@ -601,7 +659,10 @@
   function renderMonthGrid(container, bannerHtml) {
     const year = calState.cursorYear;
     const month = calState.cursorMonth;
-    const todayStr = toYmd(new Date());
+    const today = new Date();
+    const todayStr = toYmd(today);
+    const isCurrentMonth = today.getFullYear() === year && today.getMonth() === month;
+    const todayDow = today.getDay();
 
     const firstOfMonth = new Date(year, month, 1);
     const startOffset = firstOfMonth.getDay(); // 0=Sun
@@ -612,31 +673,42 @@
       const d = new Date(gridStart.getFullYear(), gridStart.getMonth(), gridStart.getDate() + i);
       cells.push(d);
     }
-    // Trim trailing 6th week if completely in next month
     const usedCells = cells[35].getMonth() !== month ? cells.slice(0, 35) : cells;
+    const weekRows = usedCells.length / 7;
+    const maxVisibleEvents = weekRows === 5 ? 5 : 4;
 
-    const headerRow = WEEKDAYS.map(
-      (wd) =>
-        `<div class="text-center text-[11px] font-bold uppercase tracking-wider text-slate-400 py-1.5">${wd}</div>`
-    ).join('');
+    const headerRow = WEEKDAYS.map((wd, idx) => {
+      const highlight = isCurrentMonth && idx === todayDow;
+      return `
+        <div class="text-center text-[11px] font-bold py-1.5 ${
+          highlight ? 'text-sky-400' : 'text-slate-400'
+        }">
+          ${wd}
+        </div>
+      `;
+    }).join('');
 
     const dayCellsHtml = usedCells
-      .map((d) => {
+      .map((d, cellIdx) => {
         const ymd = toYmd(d);
         const inMonth = d.getMonth() === month;
         const isToday = ymd === todayStr;
-        const isSelected = ymd === calState.selectedDateStr;
+        const isSelected = ymd === calState.selectedDateStr && !isToday;
+        const isLastCol = cellIdx % 7 === 6;
+
         const dayEvents = getEventsForDay(ymd);
-        const visibleEvents = dayEvents.slice(0, 3);
+        const visibleEvents = dayEvents.slice(0, maxVisibleEvents);
         const extraCount = dayEvents.length - visibleEvents.length;
 
-        const pillsHtml = visibleEvents
+        const barsHtml = visibleEvents
           .map((ev) => {
             const st = getColorStyle(ev.color);
-            const timePrefix = ev.allDay ? '' : `${formatTimeShort(ev.startIso).replace(':00 ', '')} `;
+            const desktopTime = ev.allDay
+              ? ''
+              : `<span class="hidden sm:inline opacity-80 mr-1">${esc(formatTimeCompact(ev.startIso))}</span>`;
             return `
-              <div class="px-1.5 py-0.5 rounded border text-[10px] sm:text-[11px] font-bold truncate leading-tight ${st.pill}">
-                ${esc(timePrefix + ev.title)}
+              <div class="act-cal-month-bar ${st.eventBar}" title="${esc(ev.title)}">
+                ${desktopTime}${esc(ev.title)}
               </div>
             `;
           })
@@ -644,34 +716,33 @@
 
         return `
           <button type="button" data-open-day="${ymd}"
-            class="min-h-[82px] sm:min-h-[108px] p-1.5 rounded-xl border text-left flex flex-col gap-1 transition ${
+            class="min-w-0 min-h-0 px-[1.5px] sm:px-1 pt-1 pb-1 border-b border-slate-800/80 ${
+              isLastCol ? '' : 'border-r'
+            } text-left flex flex-col justify-start gap-[2px] overflow-hidden transition ${
               isSelected
-                ? 'bg-slate-800/90 border-sky-400/80 ring-1 ring-sky-400/50'
+                ? 'bg-slate-800/75'
                 : inMonth
-                ? 'bg-slate-900/90 hover:bg-slate-800/70 border-slate-800'
-                : 'bg-slate-950/60 hover:bg-slate-900/50 border-slate-900 opacity-50'
+                ? 'bg-slate-950 hover:bg-slate-900/80 active:bg-slate-800/70'
+                : 'bg-slate-950/60 hover:bg-slate-900/50'
             }">
-            <div class="flex items-center justify-between w-full">
-              <span class="w-6 h-6 rounded-full text-xs font-extrabold flex items-center justify-center ${
+            <div class="flex items-center justify-center w-full shrink-0 mb-[1px]">
+              <span class="${
                 isToday
-                  ? 'bg-sky-500 text-slate-950'
+                  ? 'px-2 py-[1px] rounded-full bg-sky-500 text-slate-950 text-[11px] font-extrabold leading-tight'
                   : inMonth
-                  ? 'text-slate-200'
-                  : 'text-slate-500'
+                  ? 'text-[11px] font-bold text-slate-200 leading-tight py-[1px]'
+                  : 'text-[11px] font-semibold text-slate-600 leading-tight py-[1px]'
               }">
                 ${d.getDate()}
               </span>
-              ${
-                dayEvents.length > 0
-                  ? `<span class="sm:hidden text-[10px] font-bold text-slate-400">${dayEvents.length}</span>`
-                  : ''
-              }
             </div>
-            <div class="w-full space-y-1 overflow-hidden">
-              ${pillsHtml}
+            <div class="w-full flex-1 min-h-0 flex flex-col gap-[2px] overflow-hidden ${
+              inMonth ? '' : 'opacity-60'
+            }">
+              ${barsHtml}
               ${
                 extraCount > 0
-                  ? `<div class="text-[10px] font-bold text-slate-400 px-1">+${extraCount} more</div>`
+                  ? `<div class="text-[9px] sm:text-[10px] font-bold text-slate-400 px-[2px] leading-tight">+${extraCount} more</div>`
                   : ''
               }
             </div>
@@ -682,9 +753,13 @@
 
     container.innerHTML = `
       ${bannerHtml}
-      <div class="max-w-6xl mx-auto">
-        <div class="grid grid-cols-7 gap-1 sm:gap-1.5 mb-1">${headerRow}</div>
-        <div class="grid grid-cols-7 gap-1 sm:gap-1.5">${dayCellsHtml}</div>
+      <div class="flex-1 min-h-0 flex flex-col w-full">
+        <div class="shrink-0 grid grid-cols-7 bg-slate-950 border-b border-slate-800/90">
+          ${headerRow}
+        </div>
+        <div class="flex-1 min-h-0 grid grid-cols-7" style="grid-template-rows: repeat(${weekRows}, minmax(88px, 1fr));">
+          ${dayCellsHtml}
+        </div>
       </div>
     `;
 
@@ -776,7 +851,7 @@
 
     container.innerHTML = `
       ${bannerHtml}
-      <div class="max-w-2xl mx-auto space-y-4">
+      <div class="p-3 sm:p-4 max-w-2xl w-full mx-auto space-y-4">
         ${contentHtml}
       </div>
     `;
@@ -1085,7 +1160,7 @@
     calState.isOpen = true;
 
     const titleEl = document.getElementById('topBarPageTitle');
-    if (titleEl) titleEl.textContent = 'Company Calendar';
+    if (titleEl) titleEl.textContent = 'Calendar';
 
     if (typeof closeSideMenu === 'function') closeSideMenu();
 
