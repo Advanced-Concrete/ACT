@@ -210,7 +210,7 @@
       try {
         if (error.context && typeof error.context.json === 'function') {
           const body = await error.context.json();
-          if (body?.error) detail = body.error;
+          if (body?.error || body?.message) detail = body.error || body.message;
         }
       } catch {}
       throw new Error(detail);
@@ -245,12 +245,14 @@
     if (!isAppOnline()) {
       hydrateFromCache();
       calState.errorMsg = '';
+      calState.warnings = [];
       renderCalendarBody();
       return;
     }
 
     calState.loading = true;
     calState.errorMsg = '';
+    calState.warnings = [];
     renderCalendarBody();
 
     try {
