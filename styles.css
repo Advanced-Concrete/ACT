@@ -1,4 +1,4 @@
-:root { --safe-bottom: env(safe-area-inset-bottom, 16px); }
+t66:root { --safe-bottom: env(safe-area-inset-bottom, 16px); }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       background-color: #0f172a;
@@ -77,4 +77,331 @@ body.bp-viewer-open {
   border-radius: 4px;
   pointer-events: none;
   z-index: 30;
+}
+/* =========================================================================
+   ACT MASTER - HIGH-CONTRAST OUTDOOR LIGHT MODE (html.act-light)
+   Tuned for direct sunlight: pure white surfaces, near-black ink, crisp borders
+   ========================================================================= */
+html.act-light {
+  color-scheme: light;
+}
+
+html.act-light body {
+  background-color: #e2e8f0 !important;
+  color: #020617 !important;
+}
+
+/* 1. Core Surfaces (Dark Slate/Gray -> Crisp Outdoor Light) */
+html.act-light .bg-slate-950,
+html.act-light .bg-gray-950,
+html.act-light .bg-zinc-950,
+html.act-light .bg-neutral-950 {
+  background-color: #edf1f5 !important;
+}
+
+html.act-light .bg-slate-950\/95,
+html.act-light .bg-slate-950\/90 {
+  background-color: #f8fafc !important;
+}
+
+html.act-light .bg-slate-950\/85,
+html.act-light .bg-slate-950\/75,
+html.act-light .bg-slate-950\/60 {
+  background-color: #e2e8f0 !important;
+}
+
+html.act-light .bg-slate-900,
+html.act-light .bg-slate-900\/95,
+html.act-light .bg-slate-900\/90,
+html.act-light .bg-slate-900\/80,
+html.act-light .bg-slate-900\/70,
+html.act-light .bg-gray-900,
+html.act-light .bg-zinc-900 {
+  background-color: #ffffff !important;
+}
+
+html.act-light .bg-slate-800,
+html.act-light .bg-slate-800\/90,
+html.act-light .bg-slate-800\/80,
+html.act-light .bg-slate-800\/75,
+html.act-light .bg-slate-800\/70,
+html.act-light .bg-slate-800\/60,
+html.act-light .bg-slate-800\/50,
+html.act-light .bg-gray-800 {
+  background-color: #e2e8f0 !important;
+}
+
+html.act-light .bg-slate-700,
+html.act-light .bg-slate-700\/80,
+html.act-light .bg-gray-700 {
+  background-color: #cbd5e1 !important;
+}
+
+html.act-light .hover\:bg-slate-800:hover,
+html.act-light .hover\:bg-slate-800\/80:hover,
+html.act-light .hover\:bg-slate-800\/70:hover,
+html.act-light .hover\:bg-slate-900\/80:hover,
+html.act-light .hover\:bg-slate-900\/50:hover {
+  background-color: #dbe3ec !important;
+}
+
+html.act-light .hover\:bg-slate-700:hover,
+html.act-light .hover\:bg-gray-700:hover {
+  background-color: #cbd5e1 !important;
+}
+
+/* Keep modal backdrop scrims translucent dark so popups stand out clearly */
+html.act-light .bg-slate-950\/80,
+html.act-light .bg-black\/70,
+html.act-light .bg-black\/75,
+html.act-light .bg-black\/80 {
+  background-color: rgba(15, 23, 42, 0.55) !important;
+}
+
+/* Keep top header bar crisp white with a clear separation line */
+html.act-light body > header {
+  background-color: #ffffff !important;
+  border-bottom-color: #94a3b8 !important;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.1) !important;
+}
+
+/* 2. Crisp Outdoor Borders (Darker than standard light themes for sun glare) */
+html.act-light .border-slate-900,
+html.act-light .border-slate-800,
+html.act-light .border-slate-800\/90,
+html.act-light .border-slate-800\/80,
+html.act-light .border-gray-800 {
+  border-color: #cbd5e1 !important;
+}
+
+html.act-light .border-slate-700,
+html.act-light .border-slate-700\/90,
+html.act-light .border-slate-700\/80,
+html.act-light .border-slate-600,
+html.act-light .border-slate-600\/80,
+html.act-light .border-gray-700 {
+  border-color: #94a3b8 !important;
+}
+
+/* 3. High-Contrast Ink Hierarchy */
+html.act-light .text-white,
+html.act-light .text-slate-50,
+html.act-light .text-slate-100,
+html.act-light .text-gray-100 {
+  color: #020617 !important;
+}
+
+html.act-light .text-slate-200,
+html.act-light .text-gray-200 {
+  color: #0f172a !important;
+}
+
+html.act-light .text-slate-300,
+html.act-light .text-gray-300 {
+  color: #1e293b !important;
+}
+
+html.act-light .text-slate-400,
+html.act-light .text-gray-400 {
+  color: #334155 !important;
+}
+
+html.act-light .text-slate-500,
+html.act-light .text-gray-500 {
+  color: #475569 !important;
+}
+
+html.act-light .text-slate-600 {
+  color: #64748b !important;
+}
+
+html.act-light .hover\:text-white:hover {
+  color: #020617 !important;
+}
+
+/* 4. Form Inputs (Pure White + Strong Border + Black Text) */
+html.act-light input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+html.act-light select,
+html.act-light textarea {
+  background-color: #ffffff !important;
+  color: #020617 !important;
+  border-color: #64748b !important;
+}
+
+html.act-light input::placeholder,
+html.act-light textarea::placeholder {
+  color: #64748b !important;
+}
+
+/* 5. Remap Pastel Badge/Chip Text to High-Contrast Dark Shades */
+html.act-light .text-sky-200,
+html.act-light .text-sky-300,
+html.act-light .text-sky-400 {
+  color: #0369a1 !important;
+}
+
+html.act-light .text-blue-200,
+html.act-light .text-blue-300,
+html.act-light .text-blue-400 {
+  color: #1d4ed8 !important;
+}
+
+html.act-light .text-indigo-200,
+html.act-light .text-indigo-300,
+html.act-light .text-indigo-400 {
+  color: #3730a3 !important;
+}
+
+html.act-light .text-emerald-200,
+html.act-light .text-emerald-300,
+html.act-light .text-emerald-400 {
+  color: #047857 !important;
+}
+
+html.act-light .text-green-200,
+html.act-light .text-green-300,
+html.act-light .text-green-400 {
+  color: #15803d !important;
+}
+
+html.act-light .text-amber-100,
+html.act-light .text-amber-200,
+html.act-light .text-amber-300,
+html.act-light .text-amber-400 {
+  color: #92400e !important;
+}
+
+html.act-light .text-yellow-200,
+html.act-light .text-yellow-300,
+html.act-light .text-yellow-400 {
+  color: #854d0e !important;
+}
+
+html.act-light .text-rose-200,
+html.act-light .text-rose-300,
+html.act-light .text-rose-400 {
+  color: #be123c !important;
+}
+
+html.act-light .text-red-200,
+html.act-light .text-red-300,
+html.act-light .text-red-400 {
+  color: #b91c1c !important;
+}
+
+html.act-light .text-violet-200,
+html.act-light .text-violet-300,
+html.act-light .text-violet-400 {
+  color: #5b21b6 !important;
+}
+
+html.act-light .text-orange-200,
+html.act-light .text-orange-300,
+html.act-light .text-orange-400 {
+  color: #9a3412 !important;
+}
+
+html.act-light .text-cyan-200,
+html.act-light .text-cyan-300,
+html.act-light .text-cyan-400 {
+  color: #0e7490 !important;
+}
+
+/* Strengthen tinted badge/banner backgrounds for sunlight */
+html.act-light .bg-sky-500\/20,
+html.act-light .bg-blue-500\/20 {
+  background-color: #e0f2fe !important;
+}
+html.act-light .bg-indigo-500\/20 {
+  background-color: #e0e7ff !important;
+}
+html.act-light .bg-emerald-500\/20,
+html.act-light .bg-emerald-500\/25,
+html.act-light .bg-emerald-950 {
+  background-color: #d1fae5 !important;
+}
+html.act-light .bg-amber-500\/15,
+html.act-light .bg-amber-500\/20,
+html.act-light .bg-amber-500\/25 {
+  background-color: #fef3c7 !important;
+}
+html.act-light .bg-rose-500\/15,
+html.act-light .bg-rose-500\/20 {
+  background-color: #ffe4e6 !important;
+}
+html.act-light .bg-violet-500\/20 {
+  background-color: #ede9fe !important;
+}
+html.act-light .bg-orange-500\/20 {
+  background-color: #ffedd5 !important;
+}
+html.act-light .bg-cyan-500\/20 {
+  background-color: #cffafe !important;
+}
+
+/* 6. Preserve White Text on Solid Saturated Buttons & Event Bars */
+html.act-light .bg-sky-600.text-white,
+html.act-light .bg-blue-600.text-white,
+html.act-light .bg-indigo-600.text-white,
+html.act-light .bg-emerald-600.text-white,
+html.act-light .bg-green-600.text-white,
+html.act-light .bg-rose-600.text-white,
+html.act-light .bg-red-600.text-white,
+html.act-light .bg-violet-600.text-white,
+html.act-light .bg-orange-600.text-white,
+html.act-light .bg-teal-600.text-white,
+html.act-light .bg-slate-600.text-white,
+html.act-light .bg-sky-700.text-white,
+html.act-light .bg-blue-700.text-white,
+html.act-light .bg-indigo-700.text-white,
+html.act-light .bg-emerald-700.text-white,
+html.act-light .bg-rose-700.text-white,
+html.act-light .bg-red-700.text-white,
+html.act-light .act-cal-month-bar.text-white,
+html.act-light .bp-callout-color-choice.bg-slate-900 {
+  color: #ffffff !important;
+}
+
+html.act-light .bp-callout-color-choice.bg-slate-900 {
+  background-color: #0f172a !important;
+}
+
+/* Keep solid bright CTA pills high contrast */
+html.act-light .bg-sky-500.text-slate-950,
+html.act-light .bg-emerald-500.text-slate-950,
+html.act-light .bg-amber-500.text-slate-950,
+html.act-light .bg-amber-400.text-slate-950 {
+  color: #020617 !important;
+}
+
+/* 7. Module-Specific Polish (Calendar, Blueprints, Documents) */
+/* Calendar Month Grid: pure white active days, clear light-gray out-of-month, solid hairlines */
+html.act-light #viewCompanyCalendar [data-open-day].bg-slate-950 {
+  background-color: #ffffff !important;
+}
+html.act-light #viewCompanyCalendar [data-open-day].bg-slate-950\/60 {
+  background-color: #e2e8f0 !important;
+}
+html.act-light #viewCompanyCalendar [data-open-day].bg-slate-800\/75 {
+  background-color: #dbeafe !important;
+}
+html.act-light #viewCompanyCalendar .bg-sky-500.rounded-full {
+  background-color: #0284c7 !important;
+  color: #ffffff !important;
+}
+
+/* Blueprints Viewport: neutral mid-gray backdrop so white PDF paper edges stay crisp */
+html.act-light #bpCanvasViewport {
+  background-color: #cbd5e1 !important;
+}
+
+/* Keep Blueprint Measurement Labels dark & legible over white blueprint paper */
+html.act-light .bp-m-label.bg-slate-900\/90 {
+  background-color: #0f172a !important;
+  color: #6ee7b7 !important;
+}
+
+/* Company Docs Full-Screen Viewer: light-gray backdrop behind white PDF pages */
+html.act-light #actDocsViewerModal {
+  background-color: #e2e8f0 !important;
 }
