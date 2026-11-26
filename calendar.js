@@ -1,30 +1,38 @@
 // =========================================================================
 // ACT MASTER - COMPANY CALENDARS MODULE (calendar.js)
-// Zero-conflict drop-in read-only iOS / iCloud calendar viewer
-// - Proxies multiple iCloud Public Calendar (.ics) feeds via `calendar-proxy`
-// - Role guards:
-//     Admin:      View Month/Day + Add/Edit/Remove company calendar feeds
-//     PM / Supv:  View Month/Day + filter calendars (read-only)
-//     Crew:       Hidden in menu & blocked on client + server
-// - Full-bleed hairline Month grid (Google Calendar style) + clean Day view
-// - Offline cache in localStorage for field reference when signal drops
+// Zero-conflict drop-in read-only iCloud & Google Calendar viewer
+// - Proxies multiple iCloud (.ics / webcal) & Google Calendar (iCal .ics) feeds
+// - Per-calendar access control (enforced server-side in `calendar-proxy`):
+//     * By Role: Admin, PM, Supervisor, Crew (plus 1-tap Everyone shortcut)
+//     * By Individual User: assign specific employees to any feed
+//     * Crew menu tab auto-hides when a crew user has zero assigned calendars
+// - Full-bleed hairline Month grid + clean Day view
+// - Per-user offline cache in localStorage (safe on shared tablets)
 // =========================================================================
 (function initACTCalendar() {
   'use strict';
 
   const PROXY_FN = 'calendar-proxy';
-  const CACHE_KEY = 'act_company_calendar_cache_v1';
-  const HIDDEN_CALS_KEY = 'act_company_calendar_hidden_v1';
+  const CACHE_PREFIX = 'act_company_cal_cache_v2_';
+  const HIDDEN_PREFIX = 'act_company_cal_hidden_v2_';
+  const ACCESS_PREFIX = 'act_company_cal_access_v2_';
+
+  const ROLE_OPTIONS = [
+    { key: 'admin', label: 'Admin' },
+    { key: 'pm', label: 'PM' },
+    { key: 'supervisor', label: 'Supervisor' },
+    { key: 'crew', label: 'Crew' }
+  ];
 
   const COLOR_STYLES = {
-    sky:     { name: 'Blue',   dot: 'bg-sky-400',     eventBar: 'bg-sky-600 text-white',         pill: 'bg-sky-500/20 text-sky-200 border-sky-400/40',           bar: 'bg-sky-400',     chipOn: 'bg-sky-500/20 text-sky-200 border-sky-400/50' },
+    sky:     { name: 'Blue',   dot: 'bg-sky-400',     eventBar: 'bg-sky-600 text-white',         pill: 'bg-sky-500/20 text-sky-200 border-sky-400/40',             bar: 'bg-sky-400',     chipOn: 'bg-sky-500/20 text-sky-200 border-sky-400/50' },
     emerald: { name: 'Green',  dot: 'bg-emerald-400', eventBar: 'bg-emerald-600 text-white',     pill: 'bg-emerald-500/20 text-emerald-200 border-emerald-400/40', bar: 'bg-emerald-400', chipOn: 'bg-emerald-500/20 text-emerald-200 border-emerald-400/50' },
-    amber:   { name: 'Amber',  dot: 'bg-amber-400',   eventBar: 'bg-amber-500 text-slate-950',   pill: 'bg-amber-500/20 text-amber-200 border-amber-400/40',     bar: 'bg-amber-400',   chipOn: 'bg-amber-500/20 text-amber-200 border-amber-400/50' },
-    rose:    { name: 'Red',    dot: 'bg-rose-400',    eventBar: 'bg-rose-600 text-white',        pill: 'bg-rose-500/20 text-rose-200 border-rose-400/40',        bar: 'bg-rose-400',    chipOn: 'bg-rose-500/20 text-rose-200 border-rose-400/50' },
-    violet:  { name: 'Purple', dot: 'bg-violet-400',  eventBar: 'bg-violet-600 text-white',      pill: 'bg-violet-500/20 text-violet-200 border-violet-400/40',  bar: 'bg-violet-400',  chipOn: 'bg-violet-500/20 text-violet-200 border-violet-400/50' },
-    orange:  { name: 'Orange', dot: 'bg-orange-400',  eventBar: 'bg-orange-600 text-white',      pill: 'bg-orange-500/20 text-orange-200 border-orange-400/40',  bar: 'bg-orange-400',  chipOn: 'bg-orange-500/20 text-orange-200 border-orange-400/50' },
-    cyan:    { name: 'Teal',   dot: 'bg-cyan-400',    eventBar: 'bg-teal-600 text-white',        pill: 'bg-cyan-500/20 text-cyan-200 border-cyan-400/40',        bar: 'bg-cyan-400',    chipOn: 'bg-cyan-500/20 text-cyan-200 border-cyan-400/50' },
-    slate:   { name: 'Gray',   dot: 'bg-slate-400',   eventBar: 'bg-slate-600 text-white',       pill: 'bg-slate-500/25 text-slate-200 border-slate-400/40',     bar: 'bg-slate-400',   chipOn: 'bg-slate-600/40 text-slate-100 border-slate-400/50' }
+    amber:   { name: 'Amber',  dot: 'bg-amber-400',   eventBar: 'bg-amber-500 text-slate-950',   pill: 'bg-amber-500/20 text-amber-200 border-amber-400/40',       bar: 'bg-amber-400',   chipOn: 'bg-amber-500/20 text-amber-200 border-amber-400/50' },
+    rose:    { name: 'Red',    dot: 'bg-rose-400',    eventBar: 'bg-rose-600 text-white',        pill: 'bg-rose-500/20 text-rose-200 border-rose-400/40',          bar: 'bg-rose-400',    chipOn: 'bg-rose-500/20 text-rose-200 border-rose-400/50' },
+    violet:  { name: 'Purple', dot: 'bg-violet-400',  eventBar: 'bg-violet-600 text-white',      pill: 'bg-violet-500/20 text-violet-200 border-violet-400/40',    bar: 'bg-violet-400',  chipOn: 'bg-violet-500/20 text-violet-200 border-violet-400/50' },
+    orange:  { name: 'Orange', dot: 'bg-orange-400',  eventBar: 'bg-orange-600 text-white',      pill: 'bg-orange-500/20 text-orange-200 border-orange-400/40',    bar: 'bg-orange-400',  chipOn: 'bg-orange-500/20 text-orange-200 border-orange-400/50' },
+    cyan:    { name: 'Teal',   dot: 'bg-cyan-400',    eventBar: 'bg-teal-600 text-white',        pill: 'bg-cyan-500/20 text-cyan-200 border-cyan-400/40',          bar: 'bg-cyan-400',    chipOn: 'bg-cyan-500/20 text-cyan-200 border-cyan-400/50' },
+    slate:   { name: 'Gray',   dot: 'bg-slate-400',   eventBar: 'bg-slate-600 text-white',       pill: 'bg-slate-500/25 text-slate-200 border-slate-400/40',       bar: 'bg-slate-400',   chipOn: 'bg-slate-600/40 text-slate-100 border-slate-400/50' }
   };
 
   const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -39,17 +47,28 @@
     calendars: [],
     events: [],
     warnings: [],
-    hiddenCalendarIds: new Set(loadJSON(HIDDEN_CALS_KEY, [])),
+    hiddenCalendarIds: new Set(),
     syncedAt: null,
     loadedRangeKey: '',
     loading: false,
     errorMsg: '',
+
+    // User & Crew auto-visibility tracking
+    activeUserKey: '',
+    crewHasAccess: false,
+    checkingAccessKey: '',
+
+    // Admin Feed Manager state
     adminFeeds: [],
-    editingFeedId: null
+    adminEmployees: [],
+    editingFeedId: null,
+    formRoles: new Set(['admin', 'pm', 'supervisor']),
+    formUserIds: new Set(),
+    userSearchQuery: ''
   };
 
   // =========================================================================
-  // 1. SAFE ACT BRIDGES & ROLE GUARDS
+  // 1. SAFE ACT BRIDGES & USER-SCOPED STORAGE
   // =========================================================================
   function getSupabase() {
     return typeof supabaseClient !== 'undefined' ? supabaseClient : null;
@@ -67,13 +86,13 @@
     return typeof currentRole !== 'undefined' ? String(currentRole || 'crew').toLowerCase() : 'crew';
   }
 
-  function canViewCalendar() {
-    const r = getEffectiveRole();
-    return r === 'admin' || r === 'pm' || r === 'supervisor';
-  }
-
   function isAdminUser() {
     return getEffectiveRole() === 'admin';
+  }
+
+  function isManagementRole() {
+    const r = getEffectiveRole();
+    return r === 'admin' || r === 'pm' || r === 'supervisor';
   }
 
   function getActiveEmployeeId() {
@@ -81,6 +100,15 @@
       return String(activeCrewEmployeeId);
     }
     return isAdminUser() ? 'ADMIN' : '';
+  }
+
+  function getUserKey() {
+    return `${getActiveEmployeeId()}::${getEffectiveRole()}`;
+  }
+
+  function canViewCalendar() {
+    if (isManagementRole()) return true;
+    return Boolean(getActiveEmployeeId() && calState.crewHasAccess);
   }
 
   function toast(msg, isError = false) {
@@ -106,6 +134,18 @@
     } catch {}
   }
 
+  function getCacheKeyForUser() {
+    return `${CACHE_PREFIX}${getActiveEmployeeId() || 'anon'}`;
+  }
+
+  function getHiddenKeyForUser() {
+    return `${HIDDEN_PREFIX}${getActiveEmployeeId() || 'anon'}`;
+  }
+
+  function getAccessKeyForUser() {
+    return `${ACCESS_PREFIX}${getActiveEmployeeId() || 'anon'}`;
+  }
+
   function esc(str) {
     return String(str ?? '')
       .replace(/&/g, '&amp;')
@@ -116,6 +156,38 @@
 
   function getColorStyle(colorKey) {
     return COLOR_STYLES[colorKey] || COLOR_STYLES.sky;
+  }
+
+  function detectSourceBadge(urlOrSource) {
+    const val = String(urlOrSource || '').toLowerCase();
+    if (val === 'google' || val.includes('calendar.google.com') || val.includes('googleusercontent.com')) {
+      return { label: 'Google', cls: 'bg-blue-500/20 text-blue-300 border-blue-400/30' };
+    }
+    if (val === 'icloud' || val.includes('icloud.com')) {
+      return { label: 'iCloud', cls: 'bg-slate-700/80 text-slate-200 border-slate-500/40' };
+    }
+    return { label: 'iCal', cls: 'bg-slate-800 text-slate-300 border-slate-600/40' };
+  }
+
+  function formatPermissionSummary(feed) {
+    const roles = Array.isArray(feed.allowed_roles)
+      ? feed.allowed_roles.map((r) => String(r).toLowerCase())
+      : ['admin', 'pm', 'supervisor'];
+    const users = Array.isArray(feed.allowed_user_ids) ? feed.allowed_user_ids : [];
+
+    const hasAllRoles = ROLE_OPTIONS.every((opt) => roles.includes(opt.key));
+    let rolePart = '';
+    if (hasAllRoles) {
+      rolePart = 'Everyone';
+    } else {
+      const labels = ROLE_OPTIONS.filter((opt) => roles.includes(opt.key)).map((opt) => opt.label);
+      rolePart = labels.length ? labels.join(' · ') : 'Admin only';
+    }
+
+    if (users.length > 0 && !hasAllRoles) {
+      return `${rolePart} + ${users.length} user${users.length === 1 ? '' : 's'}`;
+    }
+    return rolePart;
   }
 
   // =========================================================================
@@ -206,15 +278,18 @@
   }
 
   // =========================================================================
-  // 3. EDGE FUNCTION CALLER & CACHING
+  // 3. EDGE FUNCTION CALLER, ACCESS CHECK & PER-USER CACHING
   // =========================================================================
   async function invokeCalendarProxy(payload) {
     const sb = getSupabase();
     if (!sb) throw new Error('Supabase client is not configured.');
     if (!isAppOnline()) throw new Error('Device is offline.');
 
+    const empId = getActiveEmployeeId();
+    if (!empId) throw new Error('Sign in to access calendars.');
+
     const { data, error } = await sb.functions.invoke(PROXY_FN, {
-      body: { ...payload, employee_id: getActiveEmployeeId() }
+      body: { ...payload, employee_id: empId }
     });
 
     if (error) {
@@ -234,23 +309,70 @@
   }
 
   function hydrateFromCache() {
-    const cached = loadJSON(CACHE_KEY, null);
-    if (!cached) return;
-    if (Array.isArray(cached.calendars)) calState.calendars = cached.calendars;
-    if (Array.isArray(cached.events)) calState.events = cached.events;
-    if (cached.syncedAt) calState.syncedAt = cached.syncedAt;
+    const cached = loadJSON(getCacheKeyForUser(), null);
+    if (!cached) {
+      calState.calendars = [];
+      calState.events = [];
+      calState.syncedAt = null;
+      return;
+    }
+    calState.calendars = Array.isArray(cached.calendars) ? cached.calendars : [];
+    calState.events = Array.isArray(cached.events) ? cached.events : [];
+    calState.syncedAt = cached.syncedAt || null;
+  }
+
+  async function refreshCrewAccessForActiveUser() {
+    const empId = getActiveEmployeeId();
+    const userKey = getUserKey();
+
+    if (!empId) {
+      calState.crewHasAccess = false;
+      ensureMenuButton();
+      return;
+    }
+
+    if (isManagementRole()) {
+      calState.crewHasAccess = true;
+      ensureMenuButton();
+      return;
+    }
+
+    // Use cached flag immediately so offline crew users keep their tab
+    calState.crewHasAccess = Boolean(loadJSON(getAccessKeyForUser(), false));
+    ensureMenuButton();
+
+    if (!isAppOnline() || !getSupabase()) return;
+    if (calState.checkingAccessKey === userKey) return;
+    calState.checkingAccessKey = userKey;
+
+    try {
+      const res = await invokeCalendarProxy({ mode: 'my_access' });
+      if (getUserKey() !== userKey) return;
+      calState.crewHasAccess = Boolean(res?.hasAccess);
+      saveJSON(getAccessKeyForUser(), calState.crewHasAccess);
+      ensureMenuButton();
+      if (calState.isOpen && !canViewCalendar()) {
+        closeCalendarView();
+      }
+    } catch {
+      // Keep last cached access state if offline/transient error
+    } finally {
+      if (calState.checkingAccessKey === userKey) {
+        calState.checkingAccessKey = '';
+      }
+    }
   }
 
   async function fetchEventsForCurrentMonth(force = false) {
     if (!canViewCalendar()) return;
 
-    const rangeKey = `${calState.cursorYear}-${pad2(calState.cursorMonth + 1)}`;
-    if (!force && calState.loadedRangeKey === rangeKey && calState.events.length > 0) {
+    const userKey = getUserKey();
+    const rangeKey = `${userKey}::${calState.cursorYear}-${pad2(calState.cursorMonth + 1)}`;
+    if (!force && calState.loadedRangeKey === rangeKey && calState.calendars.length > 0) {
       renderCalendarBody();
       return;
     }
 
-    // Fetch a generous window covering prev/next month spillover days
     const startDt = new Date(calState.cursorYear, calState.cursorMonth - 1, 1);
     const endDt = new Date(calState.cursorYear, calState.cursorMonth + 2, 0, 23, 59, 59);
 
@@ -273,6 +395,7 @@
         range_start: startDt.toISOString(),
         range_end: endDt.toISOString()
       });
+      if (getUserKey() !== userKey) return;
 
       calState.calendars = Array.isArray(res?.calendars) ? res.calendars : [];
       calState.events = Array.isArray(res?.events) ? res.events : [];
@@ -280,7 +403,13 @@
       calState.syncedAt = res?.syncedAt || new Date().toISOString();
       calState.loadedRangeKey = rangeKey;
 
-      saveJSON(CACHE_KEY, {
+      if (!isManagementRole()) {
+        calState.crewHasAccess = calState.calendars.length > 0;
+        saveJSON(getAccessKeyForUser(), calState.crewHasAccess);
+        ensureMenuButton();
+      }
+
+      saveJSON(getCacheKeyForUser(), {
         calendars: calState.calendars,
         events: calState.events,
         syncedAt: calState.syncedAt
@@ -348,7 +477,7 @@
           <span class="text-base leading-none">📅</span>
           <span class="truncate">Company Calendar</span>
         </span>
-        <span class="text-[10px] font-mono text-slate-400">iOS</span>
+        <span class="text-[10px] font-mono text-slate-400">Sync</span>
       `;
       btn.addEventListener('click', () => {
         if (typeof window.selectMenuFeature === 'function') {
@@ -430,7 +559,7 @@
         <div class="flex items-center justify-between px-4 py-3.5 border-b border-slate-800">
           <div>
             <h3 class="text-base font-extrabold text-white">Manage Company Calendars</h3>
-            <p class="text-[11px] text-slate-400">Read-only iCloud Public Calendar feeds (visible to Supv, PM & Admin)</p>
+            <p class="text-[11px] text-slate-400">Sync iCloud & Google Calendars with role or per-user access</p>
           </div>
           <button id="actCalManageClose" type="button"
             class="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-xl leading-none text-slate-300">&times;</button>
@@ -568,7 +697,7 @@
         const id = btn.getAttribute('data-cal-filter');
         if (calState.hiddenCalendarIds.has(id)) calState.hiddenCalendarIds.delete(id);
         else calState.hiddenCalendarIds.add(id);
-        saveJSON(HIDDEN_CALS_KEY, Array.from(calState.hiddenCalendarIds));
+        saveJSON(getHiddenKeyForUser(), Array.from(calState.hiddenCalendarIds));
         renderCalendarBody();
       };
     });
@@ -615,7 +744,7 @@
       : '';
 
     if (calState.loading && calState.calendars.length === 0) {
-      body.innerHTML = `${bannerHtml}<div class="py-16 text-center text-sm text-slate-400">Syncing iCloud calendars…</div>`;
+      body.innerHTML = `${bannerHtml}<div class="py-16 text-center text-sm text-slate-400">Syncing calendars…</div>`;
       return;
     }
 
@@ -625,19 +754,19 @@
         <div class="p-4">
           <div class="max-w-md mx-auto mt-8 rounded-2xl bg-slate-900 border border-slate-800 p-6 text-center space-y-3">
             <div class="text-3xl">📅</div>
-            <h3 class="text-base font-extrabold text-white">No Company Calendars Connected Yet</h3>
+            <h3 class="text-base font-extrabold text-white">No Calendars Assigned Yet</h3>
             <p class="text-xs text-slate-400">
               ${
                 isAdminUser()
-                  ? 'Add one or more read-only iCloud Public Calendar links so Supervisors, PMs, and Admins can view schedules across all devices.'
-                  : 'Ask an ACT Administrator to add the company iCloud calendar feed(s).'
+                  ? 'Add iCloud or Google Calendar iCal feeds and choose which roles or individual employees can view each one.'
+                  : 'No company calendars are assigned to your account right now.'
               }
             </p>
             ${
               isAdminUser()
                 ? `<button id="actCalEmptyAddBtn" type="button"
                     class="px-4 py-2.5 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-xs">
-                    + Add iCloud Calendar
+                    + Add Calendar Feed
                   </button>`
                 : ''
             }
@@ -665,7 +794,7 @@
     const todayDow = today.getDay();
 
     const firstOfMonth = new Date(year, month, 1);
-    const startOffset = firstOfMonth.getDay(); // 0=Sun
+    const startOffset = firstOfMonth.getDay();
     const gridStart = new Date(year, month, 1 - startOffset);
 
     const cells = [];
@@ -871,12 +1000,18 @@
     const header = document.getElementById('actCalEventModalHeader');
     const body = document.getElementById('actCalEventModalBody');
     const st = getColorStyle(ev.color);
+    const src = detectSourceBadge(ev.source);
 
     header.innerHTML = `
-      <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border text-[11px] font-bold mb-1.5 ${st.pill}">
-        <span class="w-2 h-2 rounded-full ${st.dot}"></span>
-        ${esc(ev.calendarName)}
-      </span>
+      <div class="flex items-center gap-1.5 mb-1.5 flex-wrap">
+        <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full border text-[11px] font-bold ${st.pill}">
+          <span class="w-2 h-2 rounded-full ${st.dot}"></span>
+          ${esc(ev.calendarName)}
+        </span>
+        <span class="px-2 py-0.5 rounded-full border text-[10px] font-bold ${src.cls}">
+          ${src.label}
+        </span>
+      </div>
       <h3 class="text-lg font-extrabold text-white leading-snug">${esc(ev.title)}</h3>
     `;
 
@@ -892,6 +1027,13 @@
     const mapsUrl = ev.location
       ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(ev.location)}`
       : '';
+
+    const sourceApp =
+      ev.source === 'google'
+        ? 'Google Calendar'
+        : ev.source === 'icloud'
+        ? 'Apple Calendar'
+        : 'your source calendar';
 
     body.innerHTML = `
       <div class="rounded-xl bg-slate-950 border border-slate-800 p-3 text-xs font-semibold text-slate-200">
@@ -920,7 +1062,7 @@
           : ''
       }
       <div class="text-[11px] text-slate-500 text-center pt-1">
-        Read-only iCloud Calendar event. Edit in Apple Calendar to update.
+        Read-only synced event. Edit in ${esc(sourceApp)} to update.
       </div>
     `;
 
@@ -928,14 +1070,32 @@
   }
 
   // =========================================================================
-  // 6. ADMIN MANAGE FEEDS MODAL
+  // 6. ADMIN MANAGE FEEDS MODAL (iCLOUD + GOOGLE + ROLES + INDIVIDUAL USERS)
   // =========================================================================
+  function loadFormPermissionsFromFeed(feed) {
+    if (feed) {
+      const roles = Array.isArray(feed.allowed_roles)
+        ? feed.allowed_roles.map((r) => String(r).toLowerCase())
+        : ['admin', 'pm', 'supervisor'];
+      calState.formRoles = new Set(roles);
+      calState.formRoles.add('admin');
+      calState.formUserIds = new Set(
+        Array.isArray(feed.allowed_user_ids) ? feed.allowed_user_ids.map(String) : []
+      );
+    } else {
+      calState.formRoles = new Set(['admin', 'pm', 'supervisor']);
+      calState.formUserIds = new Set();
+    }
+    calState.userSearchQuery = '';
+  }
+
   async function openManageFeedsModal() {
     if (!isAdminUser()) return;
     ensureManageFeedsModal();
     const modal = document.getElementById('actCalManageModal');
     const body = document.getElementById('actCalManageBody');
     calState.editingFeedId = null;
+    loadFormPermissionsFromFeed(null);
 
     modal.classList.remove('hidden');
     body.innerHTML = `<div class="py-10 text-center text-xs text-slate-400">Loading calendar feeds…</div>`;
@@ -943,10 +1103,114 @@
     try {
       const res = await invokeCalendarProxy({ mode: 'list_feeds' });
       calState.adminFeeds = Array.isArray(res?.feeds) ? res.feeds : [];
+      calState.adminEmployees = Array.isArray(res?.employees) ? res.employees : [];
       renderManageFeedsBody();
     } catch (err) {
       body.innerHTML = `<div class="rounded-xl bg-rose-500/15 border border-rose-400/40 p-3 text-xs text-rose-200">${esc(err.message)}</div>`;
     }
+  }
+
+  function renderEmployeeChecklist() {
+    const listWrap = document.getElementById('actCalUserChecklist');
+    const countEl = document.getElementById('actCalUserSelectedCount');
+    if (countEl) {
+      const n = calState.formUserIds.size;
+      countEl.textContent = n > 0 ? `${n} selected` : 'Optional';
+    }
+    if (!listWrap) return;
+
+    const q = calState.userSearchQuery.trim().toLowerCase();
+    const filtered = calState.adminEmployees
+      .filter((e) => !q || e.full_name.toLowerCase().includes(q) || e.role.includes(q))
+      .sort((a, b) => {
+        const aSel = calState.formUserIds.has(a.id) ? 0 : 1;
+        const bSel = calState.formUserIds.has(b.id) ? 0 : 1;
+        if (aSel !== bSel) return aSel - bSel;
+        return a.full_name.localeCompare(b.full_name);
+      });
+
+    if (filtered.length === 0) {
+      listWrap.innerHTML = `<div class="py-3 text-center text-[11px] text-slate-500">No matching employees.</div>`;
+      return;
+    }
+
+    listWrap.innerHTML = filtered
+      .map((emp) => {
+        const checked = calState.formUserIds.has(emp.id);
+        const alreadyByRole = calState.formRoles.has(emp.role);
+        return `
+          <label class="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg cursor-pointer transition ${
+            checked ? 'bg-sky-500/15 text-white' : 'hover:bg-slate-800/80 text-slate-300'
+          }">
+            <span class="flex items-center gap-2 min-w-0">
+              <input type="checkbox" data-toggle-emp="${esc(emp.id)}" ${checked ? 'checked' : ''} class="rounded shrink-0" />
+              <span class="text-xs font-semibold truncate">${esc(emp.full_name)}</span>
+            </span>
+            <span class="flex items-center gap-1.5 shrink-0">
+              ${
+                alreadyByRole && !checked
+                  ? `<span class="text-[9px] text-slate-500">via role</span>`
+                  : ''
+              }
+              <span class="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-slate-800 text-slate-400">
+                ${esc(emp.role)}
+              </span>
+            </span>
+          </label>
+        `;
+      })
+      .join('');
+
+    listWrap.querySelectorAll('[data-toggle-emp]').forEach((inp) => {
+      inp.onchange = () => {
+        const id = inp.getAttribute('data-toggle-emp');
+        if (inp.checked) calState.formUserIds.add(id);
+        else calState.formUserIds.delete(id);
+        renderEmployeeChecklist();
+      };
+    });
+  }
+
+  function renderRoleButtons() {
+    const wrap = document.getElementById('actCalRoleButtonsWrap');
+    const everyoneBtn = document.getElementById('actCalEveryoneToggleBtn');
+    const isEveryone = ROLE_OPTIONS.every((opt) => calState.formRoles.has(opt.key));
+
+    if (everyoneBtn) {
+      everyoneBtn.className = `px-2.5 py-1 rounded-lg border text-[11px] font-bold transition ${
+        isEveryone
+          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-400/50'
+          : 'bg-slate-900 text-slate-400 border-slate-700 hover:text-white'
+      }`;
+      everyoneBtn.textContent = isEveryone ? '✓ Everyone' : 'Select Everyone';
+    }
+
+    if (!wrap) return;
+    wrap.innerHTML = ROLE_OPTIONS.map((opt) => {
+      const on = calState.formRoles.has(opt.key);
+      const locked = opt.key === 'admin';
+      return `
+        <button type="button" data-toggle-role="${opt.key}" ${locked ? 'disabled' : ''}
+          class="h-8 rounded-lg border text-xs font-bold transition ${
+            on
+              ? 'bg-sky-500/20 text-sky-200 border-sky-400/60'
+              : 'bg-slate-900 text-slate-400 border-slate-800 hover:border-slate-600'
+          } ${locked ? 'opacity-80 cursor-default' : ''}">
+          ${on ? '✓ ' : ''}${opt.label}
+        </button>
+      `;
+    }).join('');
+
+    wrap.querySelectorAll('[data-toggle-role]').forEach((btn) => {
+      btn.onclick = () => {
+        const key = btn.getAttribute('data-toggle-role');
+        if (key === 'admin') return;
+        if (calState.formRoles.has(key)) calState.formRoles.delete(key);
+        else calState.formRoles.add(key);
+        renderRoleButtons();
+        renderEmployeeChecklist();
+      };
+    });
   }
 
   function renderManageFeedsBody() {
@@ -965,15 +1229,20 @@
         : calState.adminFeeds
             .map((f) => {
               const st = getColorStyle(f.color);
+              const src = detectSourceBadge(f.ics_url);
+              const permText = formatPermissionSummary(f);
               return `
                 <div class="rounded-xl bg-slate-950 border border-slate-800 p-3 flex items-center justify-between gap-2">
-                  <div class="min-w-0 flex-1">
-                    <div class="flex items-center gap-2">
+                  <div class="min-w-0 flex-1 space-y-1">
+                    <div class="flex items-center gap-1.5 flex-wrap">
                       <span class="w-2.5 h-2.5 rounded-full ${st.dot} shrink-0"></span>
                       <span class="text-sm font-bold text-white truncate">${esc(f.name)}</span>
+                      <span class="text-[10px] px-1.5 py-0.5 rounded border font-bold ${src.cls}">${src.label}</span>
                       ${!f.enabled ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-bold">Paused</span>` : ''}
                     </div>
-                    <div class="text-[11px] font-mono text-slate-500 truncate mt-0.5">${esc(f.ics_url)}</div>
+                    <div class="text-[11px] text-slate-300 font-medium">
+                      Visible to: <span class="text-sky-300 font-semibold">${esc(permText)}</span>
+                    </div>
                   </div>
                   <div class="flex items-center gap-1.5 shrink-0">
                     <button type="button" data-edit-feed="${esc(f.id)}"
@@ -1012,10 +1281,10 @@
         ${listHtml}
       </div>
 
-      <form id="actCalFeedForm" class="rounded-2xl bg-slate-950/90 border border-slate-800 p-3.5 space-y-3">
+      <form id="actCalFeedForm" class="rounded-2xl bg-slate-950/90 border border-slate-800 p-3.5 space-y-3.5">
         <div class="flex items-center justify-between">
           <div class="text-xs font-extrabold text-white">
-            ${editing ? `Edit "${esc(editing.name)}"` : 'Add iCloud Calendar Feed'}
+            ${editing ? `Edit "${esc(editing.name)}"` : 'Add iCloud or Google Calendar Feed'}
           </div>
           ${
             editing
@@ -1026,19 +1295,20 @@
 
         <div>
           <label class="block text-[11px] font-bold text-slate-400 mb-1">Calendar Name</label>
-          <input id="actCalFeedName" type="text" required placeholder="e.g. Pour Schedule, Saw Cutting, Equipment"
+          <input id="actCalFeedName" type="text" required placeholder="e.g. Finish Schedule, Pour Schedule, Company Holidays"
             value="${esc(editing?.name || '')}"
             class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-sm text-white focus:outline-none focus:border-sky-500" />
         </div>
 
         <div>
-          <label class="block text-[11px] font-bold text-slate-400 mb-1">iCloud Public Calendar Link</label>
-          <input id="actCalFeedUrl" type="text" required placeholder="webcal://p123-caldav.icloud.com/published/2/..."
+          <label class="block text-[11px] font-bold text-slate-400 mb-1">Calendar iCal Link (iCloud or Google)</label>
+          <input id="actCalFeedUrl" type="text" required placeholder="webcal://p##-caldav.icloud.com/... or https://calendar.google.com/calendar/ical/.../basic.ics"
             value="${esc(editing?.ics_url || '')}"
             class="w-full px-3 py-2 rounded-xl bg-slate-900 border border-slate-700 text-xs font-mono text-white focus:outline-none focus:border-sky-500" />
-          <p class="text-[10px] text-slate-500 mt-1">
-            On iPhone/iPad: Calendar app → Calendars → tap (i) → turn on Public Calendar → Share Link → Copy.
-          </p>
+          <div class="text-[10px] text-slate-400 mt-1.5 space-y-0.5 leading-relaxed">
+            <div><strong class="text-slate-300">Google Calendar:</strong> Settings → pick calendar → <em>Integrate calendar</em> → copy <strong>Secret address in iCal format</strong> (keeps calendar private).</div>
+            <div><strong class="text-slate-300">Apple iCloud:</strong> Calendar app → Calendars → (i) → turn on <em>Public Calendar</em> → Share Link → Copy.</div>
+          </div>
         </div>
 
         <div>
@@ -1047,9 +1317,29 @@
           <div class="grid grid-cols-4 gap-1.5">${colorSwatches}</div>
         </div>
 
+        <div class="space-y-2 pt-1 border-t border-slate-800">
+          <div class="flex items-center justify-between gap-2">
+            <label class="text-[11px] font-bold text-slate-300">Who Can View — Roles</label>
+            <button id="actCalEveryoneToggleBtn" type="button"></button>
+          </div>
+          <div id="actCalRoleButtonsWrap" class="grid grid-cols-4 gap-1.5"></div>
+        </div>
+
+        <div class="space-y-2 pt-1 border-t border-slate-800">
+          <div class="flex items-center justify-between gap-2">
+            <label class="text-[11px] font-bold text-slate-300">Assign Specific Users</label>
+            <span id="actCalUserSelectedCount" class="text-[10px] font-bold text-sky-400"></span>
+          </div>
+          <input id="actCalUserSearchInput" type="text" placeholder="Search employees by name or role..."
+            value="${esc(calState.userSearchQuery)}"
+            class="w-full px-3 py-1.5 rounded-xl bg-slate-900 border border-slate-700 text-xs text-white focus:outline-none focus:border-sky-500" />
+          <div id="actCalUserChecklist"
+            class="max-h-40 overflow-y-auto rounded-xl bg-slate-900/90 border border-slate-800 p-1 space-y-0.5"></div>
+        </div>
+
         <label class="flex items-center gap-2 text-xs text-slate-300 cursor-pointer pt-1">
           <input id="actCalFeedEnabled" type="checkbox" ${editing?.enabled === false ? '' : 'checked'} class="rounded" />
-          <span>Active (visible to Supervisors, PMs & Admins)</span>
+          <span>Active (syncs to assigned roles & users)</span>
         </label>
 
         <button id="actCalSaveFeedBtn" type="submit"
@@ -1058,6 +1348,25 @@
         </button>
       </form>
     `;
+
+    renderRoleButtons();
+    renderEmployeeChecklist();
+
+    document.getElementById('actCalEveryoneToggleBtn').onclick = () => {
+      const isEveryone = ROLE_OPTIONS.every((opt) => calState.formRoles.has(opt.key));
+      if (isEveryone) {
+        calState.formRoles = new Set(['admin', 'pm', 'supervisor']);
+      } else {
+        calState.formRoles = new Set(ROLE_OPTIONS.map((opt) => opt.key));
+      }
+      renderRoleButtons();
+      renderEmployeeChecklist();
+    };
+
+    document.getElementById('actCalUserSearchInput').oninput = (e) => {
+      calState.userSearchQuery = e.target.value || '';
+      renderEmployeeChecklist();
+    };
 
     body.querySelectorAll('[data-pick-color]').forEach((btn) => {
       btn.onclick = () => {
@@ -1078,13 +1387,17 @@
     if (cancelEditBtn) {
       cancelEditBtn.onclick = () => {
         calState.editingFeedId = null;
+        loadFormPermissionsFromFeed(null);
         renderManageFeedsBody();
       };
     }
 
     body.querySelectorAll('[data-edit-feed]').forEach((btn) => {
       btn.onclick = () => {
-        calState.editingFeedId = btn.getAttribute('data-edit-feed');
+        const id = btn.getAttribute('data-edit-feed');
+        const feed = calState.adminFeeds.find((f) => f.id === id) || null;
+        calState.editingFeedId = id;
+        loadFormPermissionsFromFeed(feed);
         renderManageFeedsBody();
       };
     });
@@ -1097,7 +1410,10 @@
         try {
           await invokeCalendarProxy({ mode: 'delete_feed', id });
           calState.adminFeeds = calState.adminFeeds.filter((f) => f.id !== id);
-          if (calState.editingFeedId === id) calState.editingFeedId = null;
+          if (calState.editingFeedId === id) {
+            calState.editingFeedId = null;
+            loadFormPermissionsFromFeed(null);
+          }
           toast('Calendar removed.', false);
           renderManageFeedsBody();
           fetchEventsForCurrentMonth(true);
@@ -1114,6 +1430,8 @@
       const icsUrl = document.getElementById('actCalFeedUrl').value.trim();
       const color = document.getElementById('actCalFeedColor').value || 'sky';
       const enabled = document.getElementById('actCalFeedEnabled').checked;
+      const allowed_roles = Array.from(calState.formRoles);
+      const allowed_user_ids = Array.from(calState.formUserIds);
 
       saveBtn.disabled = true;
       saveBtn.textContent = 'Saving…';
@@ -1124,11 +1442,17 @@
           name,
           ics_url: icsUrl,
           color,
-          enabled
+          enabled,
+          allowed_roles,
+          allowed_user_ids
         });
         const refreshed = await invokeCalendarProxy({ mode: 'list_feeds' });
         calState.adminFeeds = Array.isArray(refreshed?.feeds) ? refreshed.feeds : [];
+        if (Array.isArray(refreshed?.employees)) {
+          calState.adminEmployees = refreshed.employees;
+        }
         calState.editingFeedId = null;
+        loadFormPermissionsFromFeed(null);
         toast(`Saved calendar "${name}".`, false);
         renderManageFeedsBody();
         fetchEventsForCurrentMonth(true);
@@ -1145,7 +1469,7 @@
   // =========================================================================
   async function openCalendarView() {
     if (!canViewCalendar()) {
-      toast('Calendar access is restricted to Supervisors, PMs, and Admins.', true);
+      toast('No calendars are assigned to your account.', true);
       return;
     }
 
@@ -1174,6 +1498,35 @@
     document.getElementById('viewCompanyCalendar')?.classList.add('hidden');
     document.getElementById('actCalEventModal')?.classList.add('hidden');
     document.getElementById('actCalManageModal')?.classList.add('hidden');
+  }
+
+  function syncUserContextAndVisibility() {
+    const nextKey = getUserKey();
+    const userChanged = nextKey !== calState.activeUserKey;
+
+    if (userChanged) {
+      calState.activeUserKey = nextKey;
+      calState.loadedRangeKey = '';
+      calState.calendars = [];
+      calState.events = [];
+      calState.warnings = [];
+      calState.errorMsg = '';
+      calState.hiddenCalendarIds = new Set(loadJSON(getHiddenKeyForUser(), []));
+      refreshCrewAccessForActiveUser();
+    }
+
+    ensureMenuButton();
+
+    if (calState.isOpen) {
+      if (!canViewCalendar()) {
+        closeCalendarView();
+      } else if (userChanged) {
+        hydrateFromCache();
+        fetchEventsForCurrentMonth(true);
+      } else {
+        renderToolbar();
+      }
+    }
   }
 
   function installNavigationHooks() {
@@ -1209,25 +1562,20 @@
     if (typeof prevLogout === 'function') {
       window.logoutUser = function () {
         closeCalendarView();
+        calState.activeUserKey = '';
         calState.loadedRangeKey = '';
+        calState.crewHasAccess = false;
+        calState.calendars = [];
+        calState.events = [];
         return prevLogout.apply(this, arguments);
       };
     }
-
-    const syncVisibility = () => {
-      ensureMenuButton();
-      if (calState.isOpen && !canViewCalendar()) {
-        closeCalendarView();
-      } else if (calState.isOpen) {
-        renderToolbar();
-      }
-    };
 
     const prevRefreshRole = window.refreshRoleUiVisibility;
     if (typeof prevRefreshRole === 'function') {
       window.refreshRoleUiVisibility = function () {
         const res = prevRefreshRole.apply(this, arguments);
-        syncVisibility();
+        syncUserContextAndVisibility();
         return res;
       };
     }
@@ -1236,12 +1584,12 @@
     if (typeof prevUpdateTopBar === 'function') {
       window.updateTopBarIndicators = function () {
         const res = prevUpdateTopBar.apply(this, arguments);
-        syncVisibility();
+        syncUserContextAndVisibility();
         return res;
       };
     }
 
-    syncVisibility();
+    syncUserContextAndVisibility();
   }
 
   window.ACTCalendar = {
