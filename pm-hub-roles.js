@@ -125,6 +125,36 @@
       };
     }
 
+    // Remove static Payroll KPI card, Payroll tab button & Payroll menu item from index.html at runtime
+    function stripPayrollUiFromPmHub() {
+      const payrollKpi = document.getElementById('pmKpiPayroll');
+      const hoursKpi = document.getElementById('pmKpiHours');
+      if (payrollKpi) {
+        let card = payrollKpi;
+        while (card && card.parentElement && (!hoursKpi || !card.parentElement.contains(hoursKpi))) {
+          card = card.parentElement;
+        }
+        if (card && card.parentElement && (!hoursKpi || card.parentElement.contains(hoursKpi))) {
+          const grid = card.parentElement;
+          card.remove();
+          if (grid && typeof grid.className === 'string') {
+            grid.className = grid.className.replace(/\b(sm:|md:|lg:|xl:)?grid-cols-4\b/g, '$1grid-cols-3');
+          }
+        } else {
+          payrollKpi.remove();
+        }
+      }
+
+      const payrollTabBtn = document.getElementById('pmTabBtn_payroll');
+      if (payrollTabBtn) payrollTabBtn.remove();
+
+      const prMenuBtn = document.getElementById('menuFeatPayroll');
+      if (prMenuBtn) {
+        prMenuBtn.classList.add('hidden');
+        prMenuBtn.style.display = 'none';
+      }
+    }
+
     async function loadPmPortalData() {
       applyStoredRolesSync();
       try {
@@ -198,13 +228,15 @@
       if (!receiptsBtn || !receiptsBtn.parentNode) return;
       const mainFeaturesContainer = receiptsBtn.parentNode;
 
-      // Move Field Forms, Time Cards & Payroll out of #drawerAdminFutureFeatures into the main FEATURES list
-      ['menuFeatForms', 'menuFeatTimecards', 'menuFeatPayroll'].forEach(id => {
+      // Move Field Forms & Time Cards out of #drawerAdminFutureFeatures into the main FEATURES list
+      ['menuFeatForms', 'menuFeatTimecards'].forEach(id => {
         const btn = document.getElementById(id);
         if (btn && btn.parentNode !== mainFeaturesContainer) {
           mainFeaturesContainer.appendChild(btn);
         }
       });
+
+      stripPayrollUiFromPmHub();
 
       if (!document.getElementById('menuFeatMyPersonalCard')) {
         const myCardBtn = document.createElement('button');
@@ -302,6 +334,7 @@
 
     function refreshRoleUiVisibility() {
       ensureMenuButtonsExist();
+      stripPayrollUiFromPmHub();
       const effRole = getActiveUserEffectiveRole();
       const emp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
       const roleInfo = USER_ROLE_LABELS[effRole] || USER_ROLE_LABELS.crew;
@@ -395,9 +428,6 @@
       const tcBtn = document.getElementById('menuFeatTimecards');
       if (tcBtn) tcBtn.classList.toggle('hidden', !(isAdmin || isPmOrSupv));
 
-      const prBtn = document.getElementById('menuFeatPayroll');
-      if (prBtn) prBtn.classList.toggle('hidden', !(isAdmin || effRole === 'pm' || isAssignedPmOnAnyJob));
-
       const roleMenuBtn = document.getElementById('menuFeatUserRoles');
       if (roleMenuBtn) roleMenuBtn.classList.toggle('hidden', !isAdmin);
 
@@ -482,7 +512,7 @@
       }
     };
 
-    // 3. Extend selectMenuFeature so PM Hub, Time Cards, Payroll, and Field Forms work for all permitted roles
+    // 3. Extend selectMenuFeature so PM Hub, Time Cards, and Field Forms work for all permitted roles
     const _baseSelectMenuFeature = window.selectMenuFeature;
     window.selectMenuFeature = function(featureKey) {
       adminViewingPersonalCard = false;
@@ -496,17 +526,16 @@
         j => (j.pm_name || '').trim().toLowerCase() === (emp.full_name || '').trim().toLowerCase()
       );
 
-      // Route 'pm_portal', 'timecards', and 'payroll' directly into their dedicated PM Project Hub views & tabs!
-      if (featureKey === 'pm_portal' || featureKey === 'timecards' || featureKey === 'payroll') {
+      // Route 'pm_portal' and 'timecards' directly into their dedicated PM Project Hub views & tabs
+      if (featureKey === 'pm_portal' || featureKey === 'timecards') {
         if (effRole !== 'admin' && effRole !== 'pm' && effRole !== 'supervisor' && !isAssignedPm) {
           closeSideMenu();
           return showSimpleToast('PM Project Hub requires PM, Supervisor, or Admin level', true);
         }
         const hubLabel = effRole === 'supervisor' ? 'Supervisor Job Hub' : 'PM Project Hub';
         const viewMeta = {
-          pm_portal: { top: hubLabel,     eye: 'Project Manager Workspace', h1: `${hubLabel} — Docs, Receipts, Hours & Payroll`, tab: 'docs' },
-          timecards: { top: 'Time Cards', eye: 'Crew Timekeeping & Hours',  h1: 'Time Cards — Crew Hours Logged',                    tab: 'hours' },
-          payroll:   { top: 'Payroll',    eye: 'Labor Cost & Payroll',      h1: 'Payroll — Project Labor Breakdown',                 tab: 'payroll' }
+          pm_portal: { top: hubLabel,     eye: 'Project Manager Workspace', h1: `${hubLabel} — Docs, Receipts & Hours`, tab: 'docs' },
+          timecards: { top: 'Time Cards', eye: 'Crew Timekeeping & Hours',  h1: 'Time Cards — Crew Hours Logged',       tab: 'hours' }
         };
         const cfg = viewMeta[featureKey] || viewMeta.pm_portal;
         activePmPortalTab = cfg.tab;
@@ -563,11 +592,13 @@
     (function initRolesAndPmModuleImmediately() {
       applyStoredRolesSync();
       ensureMenuButtonsExist();
+      stripPayrollUiFromPmHub();
       refreshRoleUiVisibility();
       setTimeout(async () => {
         await loadPmPortalData();
         hookNewJobInputsForPmPrompt();
         injectRoleButtonIntoPmHeader();
+        stripPayrollUiFromPmHub();
         refreshRoleUiVisibility();
       }, 300);
     })();
@@ -992,9 +1023,10 @@
     };
 
     // =========================================================================
-    // 7. PROJECT MANAGER PORTAL: DOCS, RECEIPTS/INVOICES, HOURS & PAYROLL
+    // 7. PROJECT MANAGER PORTAL: DOCS, RECEIPTS/INVOICES & HOURS
     // =========================================================================
     window.initPmPortalView = async function initPmPortalView() {
+      stripPayrollUiFromPmHub();
       await loadPmPortalData();
       await loadFormTemplatesFromSupabase();
       injectRoleButtonIntoPmHeader();
@@ -1060,11 +1092,12 @@
     }
 
     window.switchPmPortalTab = function switchPmPortalTab(tabKey) {
-      activePmPortalTab = tabKey;
-      ['docs', 'receipts', 'hours', 'payroll'].forEach(k => {
+      const validTab = ['docs', 'receipts', 'hours'].includes(tabKey) ? tabKey : 'docs';
+      activePmPortalTab = validTab;
+      ['docs', 'receipts', 'hours'].forEach(k => {
         const btn = document.getElementById(`pmTabBtn_${k}`);
         if (btn) {
-          btn.className = k === tabKey
+          btn.className = k === validTab
             ? 'px-3.5 py-2 rounded-xl text-xs font-bold bg-indigo-600 text-white shadow'
             : 'px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 text-slate-300 hover:text-white';
         }
@@ -1073,6 +1106,7 @@
     }
 
     function renderPmPortalContent() {
+      stripPayrollUiFromPmHub();
       const selectedPm = document.getElementById('pmPortalSelectedPm')?.value || 'ALL';
       const selectedJob = document.getElementById('pmPortalSelectedJob')?.value || 'ALL';
 
@@ -1120,12 +1154,13 @@
         return sum + (isNaN(val) ? 0 : val);
       }, 0);
       const totalHours = hoursList.reduce((sum, t) => sum + (Number(t.hours) || 0), 0);
-      const totalPayroll = hoursList.reduce((sum, t) => sum + ((Number(t.hours) || 0) * (Number(t.hourly_rate) || 0)), 0);
 
-      document.getElementById('pmKpiDocs').textContent = docs.length;
-      document.getElementById('pmKpiReceipts').textContent = `$${totalReceiptSpend.toFixed(2)}`;
-      document.getElementById('pmKpiHours').textContent = `${totalHours.toFixed(1)} hrs`;
-      document.getElementById('pmKpiPayroll').textContent = `$${totalPayroll.toFixed(2)}`;
+      const docsEl = document.getElementById('pmKpiDocs');
+      const receiptsEl = document.getElementById('pmKpiReceipts');
+      const hoursEl = document.getElementById('pmKpiHours');
+      if (docsEl) docsEl.textContent = docs.length;
+      if (receiptsEl) receiptsEl.textContent = `$${totalReceiptSpend.toFixed(2)}`;
+      if (hoursEl) hoursEl.textContent = `${totalHours.toFixed(1)} hrs`;
 
       const body = document.getElementById('pmPortalTabBody');
       if (!body) return;
@@ -1230,46 +1265,6 @@
             </div>
           </div>
         `;
-        return;
-      }
-
-      if (activePmPortalTab === 'payroll') {
-        const byEmp = {};
-        hoursList.forEach(t => {
-          const key = t.employee_name || 'Crew';
-          if (!byEmp[key]) byEmp[key] = { hours: 0, cost: 0, approvedHours: 0 };
-          const h = Number(t.hours) || 0;
-          const r = Number(t.hourly_rate) || 0;
-          byEmp[key].hours += h;
-          byEmp[key].cost += h * r;
-          if (t.approved_by_pm) byEmp[key].approvedHours += h;
-        });
-
-        const rows = Object.entries(byEmp);
-        body.innerHTML = `
-          <div class="space-y-3">
-            <div class="flex items-center justify-between">
-              <h2 class="text-xs font-bold uppercase tracking-wider text-amber-400">Project Payroll & Labor Cost Breakdown</h2>
-              <span class="text-xs font-mono font-bold text-amber-300">Total Labor: $${totalPayroll.toFixed(2)}</span>
-            </div>
-            <div class="space-y-2">
-              ${rows.map(([empName, stats]) => `
-                <div class="p-3 rounded-xl bg-slate-900 border border-slate-700 flex items-center justify-between text-xs">
-                  <div>
-                    <div class="font-bold text-white">${empName}</div>
-                    <div class="text-[11px] text-slate-400">
-                      Total: <span class="text-white font-mono">${stats.hours.toFixed(2)} hrs</span> •
-                      PM Approved: <span class="text-emerald-400 font-mono">${stats.approvedHours.toFixed(2)} hrs</span>
-                    </div>
-                  </div>
-                  <div class="text-right font-mono font-bold text-amber-400 text-sm">
-                    $${stats.cost.toFixed(2)}
-                  </div>
-                </div>
-              `).join('') || `<p class="text-xs text-slate-500 py-4">No payroll entries recorded for the selected project filter yet.</p>`}
-            </div>
-          </div>
-        `;
       }
     }
 
@@ -1297,14 +1292,10 @@
               <input type="date" id="logHrDate" value="${today}" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white" />
             </div>
           </div>
-          <div class="grid grid-cols-3 gap-2">
+          <div class="grid grid-cols-2 gap-2">
             <div>
               <label class="block font-bold text-slate-300 mb-1">Hours</label>
               <input type="number" step="0.25" id="logHrHours" placeholder="8.0" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono" />
-            </div>
-            <div>
-              <label class="block font-bold text-slate-300 mb-1">Hourly Rate ($)</label>
-              <input type="number" step="0.50" id="logHrRate" value="35.00" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono" />
             </div>
             <div>
               <label class="block font-bold text-slate-300 mb-1">Cost Code</label>
@@ -1329,7 +1320,6 @@
       const employee_name = document.getElementById('logHrEmp')?.value || '';
       const work_date = document.getElementById('logHrDate')?.value || new Date().toISOString().slice(0, 10);
       const hours = Number(document.getElementById('logHrHours')?.value || 0);
-      const hourly_rate = Number(document.getElementById('logHrRate')?.value || 0);
       const cost_code = document.getElementById('logHrCc')?.value || '';
       const notes = document.getElementById('logHrNotes')?.value.trim() || '';
 
@@ -1342,7 +1332,7 @@
         cost_code,
         work_date,
         hours,
-        hourly_rate,
+        hourly_rate: 0,
         notes,
         approved_by_pm: true,
         created_at: new Date().toISOString()
