@@ -468,4 +468,73 @@ html.act-light #actDocsViewerModal {
   overflow-y: auto;
   min-height: 0;
 }
+/* =========================================================================
+   LIGHT MODE CONTRAST PATCH (Translucent Slate Bars & Dark-Tinted Buttons)
+   ========================================================================= */
+/* Catch all non-modal translucent dark slate surfaces (fixes Blueprint selector bar) */
+html.act-light [class*="bg-slate-950/"]:not(.fixed):not(.bp-m-label),
+html.act-light [class*="bg-slate-900/"]:not(.fixed):not(.bp-m-label) {
+  background-color: #f8fafc !important;
+  border-color: #94a3b8 !important;
+}
+
+html.act-light [class*="bg-slate-800/"]:not(.fixed):not(.bp-m-label) {
+  background-color: #e2e8f0 !important;
+  border-color: #94a3b8 !important;
+}
+
+/* Remap dark indigo/violet/accent button tints (fixes Re-Scan Links in Light Mode) */
+html.act-light [class*="bg-indigo-9"],
+html.act-light [class*="bg-indigo-8"],
+html.act-light [class*="bg-indigo-600/"],
+html.act-light [class*="bg-indigo-500/"] {
+  background-color: #e0e7ff !important;
+  border-color: #818cf8 !important;
+  color: #312e81 !important;
+}
+html.act-light [class*="bg-indigo-9"]:hover,
+html.act-light [class*="bg-indigo-8"]:hover,
+html.act-light [class*="bg-indigo-600/"]:hover,
+html.act-light [class*="bg-indigo-500/"]:hover {
+  background-color: #c7d2fe !important;
+}
+
+html.act-light [class*="bg-violet-9"],
+html.act-light [class*="bg-purple-9"] {
+  background-color: #ede9fe !important;
+  border-color: #a78bfa !important;
+  color: #4c1d95 !important;
+}
+
+html.act-light [class*="bg-sky-9"],
+html.act-light [class*="bg-blue-9"] {
+  background-color: #e0f2fe !important;
+  border-color: #38bdf8 !important;
+  color: #0369a1 !important;
+}
+
+html.act-light [class*="bg-amber-9"] {
+  background-color: #fef3c7 !important;
+  border-color: #f59e0b !important;
+  color: #92400e !important;
+}
+
+html.act-light [class*="bg-emerald-9"] {
+  background-color: #d1fae5 !important;
+  border-color: #34d399 !important;
+  color: #065f46 !important;
+}
+
+html.act-light [class*="bg-rose-9"],
+html.act-light [class*="bg-red-9"] {
+  background-color: #ffe4e6 !important;
+  border-color: #fb7185 !important;
+  color: #9f1239 !important;
+}
+
+/* Keep blueprint measurement pills dark over white PDF paper */
+html.act-light .bp-m-label.bg-slate-900\/90 {
+  background-color: #0f172a !important;
+  color: #6ee7b7 !important;
+}
 
