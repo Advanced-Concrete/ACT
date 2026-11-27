@@ -405,3 +405,19 @@ html.act-light .bp-m-label.bg-slate-900\/90 {
 html.act-light #actDocsViewerModal {
   background-color: #e2e8f0 !important;
 }
+/* =========================================================================
+   PHONE LANDSCAPE CHROME COMPACTION (max-height: 540px — phones only)
+   ========================================================================= */
+@media (orientation: landscape) and (max-height: 540px) {
+  body > header {
+    padding-top: 4px !important;
+    padding-bottom: 4px !important;
+  }
+
+  #viewBlueprints .bp-fs-chrome {
+    padding-top: 4px !important;
+    padding-bottom: 4px !important;
+    gap: 4px !important;
+  }
+}
+
