@@ -3,8 +3,9 @@
 // Zero-conflict drop-in History API manager for Android, iOS & Desktop PWAs
 // - Pushes real user-gesture history entries (beats Chrome's history intervention)
 // - Steps back cleanly through: Modals -> Side Menu -> Blueprint Fullscreen ->
-//   Measure Mode -> Calendar Day View -> Previous View -> Home / Native Exit
-// - Rewinds stale entries when landing on Home so exiting never takes extra taps
+//   Measure Mode -> Calendar Day View -> Previous View -> Role Home / Native Exit
+// - Role-safe Home restore: Admins always return to openAdminPage(), never raw #viewCrew
+// - Clears cached navigation snapshots immediately on Switch User / Logout
 // =========================================================================
 (function initACTBackNav() {
   'use strict';
@@ -33,15 +34,32 @@
     isHandlingPop: false,
     suppressNextPop: false,
     lastUserGestureAt: 0,
-    viewStack: [],       // e.g. [{ type: 'home', snapshot }, { type: 'feature', key: 'blueprints' }]
-    homeSnapshot: null,  // DOM snapshot of base screen before entering overlay modules
+    activeUserKey: '',
+    viewStack: [],       // e.g. [{ kind: 'feature', key: 'blueprints' }]
+    homeSnapshot: null,  // Safe base snapshot (never stores #viewCrew for Admins)
     lastSignature: '',
     observerTimer: null
   };
 
   // =========================================================================
-  // 1. VISIBILITY & UI STATE INSPECTORS
+  // 1. ROLE, USER IDENTITY & VISIBILITY INSPECTORS
   // =========================================================================
+  function getEffectiveRole() {
+    if (typeof getActiveUserEffectiveRole === 'function') {
+      return String(getActiveUserEffectiveRole() || 'crew').toLowerCase();
+    }
+    return typeof currentRole !== 'undefined' ? String(currentRole || 'crew').toLowerCase() : 'crew';
+  }
+
+  function getActiveUserKey() {
+    const role = getEffectiveRole();
+    const empId =
+      typeof activeCrewEmployeeId !== 'undefined' && activeCrewEmployeeId
+        ? String(activeCrewEmployeeId)
+        : '';
+    return `${role}::${empId}`;
+  }
+
   function isVisible(el) {
     if (!el || !el.isConnected) return false;
     if (el.classList.contains('hidden')) return false;
@@ -70,18 +88,15 @@
       return false;
     }
     const rect = el.getBoundingClientRect();
-    // Handles both `hidden`-toggled drawers and `-translate-x-full` off-screen drawers
     return rect.width > 40 && rect.right > 20 && rect.left < window.innerWidth - 20;
   }
 
   function findTopOpenModal() {
-    // 1. Check our explicit module modals in strict z-order priority
     for (const id of KNOWN_MODALS) {
       const el = document.getElementById(id);
       if (isVisible(el)) return el;
     }
 
-    // 2. Fallback: detect any other visible fullscreen modal overlay (Dropbox picker, Callout editor, Receipt modal, etc.)
     const sideMenuEl = findSideMenuElement();
     const candidates = Array.from(document.querySelectorAll('body > div, body > section')).filter((el) => {
       if (PRIMARY_VIEW_IDS.includes(el.id)) return false;
@@ -143,20 +158,32 @@
     if (isVisible(document.getElementById('viewBlueprints'))) return 'blueprints';
     if (isVisible(document.getElementById('viewCompanyCalendar'))) return 'calendar';
     if (isVisible(document.getElementById('viewCompanyDocuments'))) return 'documents';
-    if (isVisible(document.getElementById('viewAdmin'))) return 'admin';
     if (isVisible(document.getElementById('viewOtherModule'))) return 'other';
-    if (isVisible(document.getElementById('viewPmPortal'))) return 'pm_portal';
+
+    const role = getEffectiveRole();
+    if (isVisible(document.getElementById('viewAdmin'))) {
+      return role === 'admin' ? 'home' : 'admin';
+    }
+    if (isVisible(document.getElementById('viewPmPortal'))) {
+      return role === 'pm' ? 'home' : 'pm_portal';
+    }
     return 'home';
   }
 
   // =========================================================================
-  // 2. HOME SCREEN SNAPSHOT & RESTORE
+  // 2. ROLE-SAFE HOME SNAPSHOT & RESTORE (NEVER EXPOSES STALE #viewCrew)
   // =========================================================================
   function captureHomeSnapshotIfAtBase() {
     const activeMod = getActiveTopModule();
     if (activeMod === 'blueprints' || activeMod === 'calendar' || activeMod === 'documents') return;
 
-    const baseIds = ['viewCrew', 'viewAdmin', 'viewOtherModule', 'viewPmPortal', 'roleWorkspaceQuickBar'];
+    const role = getEffectiveRole();
+    const baseIds = ['viewAdmin', 'viewPmPortal', 'viewOtherModule', 'roleWorkspaceQuickBar'];
+    // Never snapshot raw #viewCrew for Admins (prevents ever unhiding a default/wrong employee card)
+    if (role !== 'admin') {
+      baseIds.push('viewCrew');
+    }
+
     const visibleIds = baseIds.filter((id) => {
       const el = document.getElementById(id);
       return el && !el.classList.contains('hidden');
@@ -164,6 +191,7 @@
 
     if (visibleIds.length > 0) {
       nav.homeSnapshot = {
+        userKey: getActiveUserKey(),
         visibleIds,
         title: document.getElementById('topBarPageTitle')?.textContent || ''
       };
@@ -178,20 +206,42 @@
     const baseIds = ['viewCrew', 'viewAdmin', 'viewOtherModule', 'viewPmPortal', 'roleWorkspaceQuickBar'];
     baseIds.forEach((id) => document.getElementById(id)?.classList.add('hidden'));
 
-    if (nav.homeSnapshot && nav.homeSnapshot.visibleIds.length > 0) {
-      nav.homeSnapshot.visibleIds.forEach((id) => document.getElementById(id)?.classList.remove('hidden'));
-      const titleEl = document.getElementById('topBarPageTitle');
-      if (titleEl && nav.homeSnapshot.title) titleEl.textContent = nav.homeSnapshot.title;
-    } else if (typeof window.openMyPersonalCardView === 'function') {
-      nav.isHandlingPop = true;
-      try {
+    const role = getEffectiveRole();
+    const curUserKey = getActiveUserKey();
+    const validSnapshot =
+      nav.homeSnapshot &&
+      nav.homeSnapshot.userKey === curUserKey &&
+      nav.homeSnapshot.visibleIds.length > 0
+        ? nav.homeSnapshot
+        : null;
+
+    nav.isHandlingPop = true;
+    try {
+      if (role === 'admin') {
+        // Admins always return via openAdminPage() so their proper workspace renders
+        if (typeof window.openAdminPage === 'function') {
+          window.openAdminPage();
+        } else {
+          document.getElementById('viewAdmin')?.classList.remove('hidden');
+          document.getElementById('roleWorkspaceQuickBar')?.classList.remove('hidden');
+        }
+      } else if (validSnapshot && validSnapshot.visibleIds.includes('viewPmPortal')) {
+        validSnapshot.visibleIds.forEach((id) => document.getElementById(id)?.classList.remove('hidden'));
+        const titleEl = document.getElementById('topBarPageTitle');
+        if (titleEl && validSnapshot.title) titleEl.textContent = validSnapshot.title;
+      } else if (typeof window.openMyPersonalCardView === 'function') {
+        // Non-admins re-render through openMyPersonalCardView() so the active employee's card is bound
         window.openMyPersonalCardView();
-      } finally {
-        nav.isHandlingPop = false;
+      } else if (validSnapshot) {
+        validSnapshot.visibleIds.forEach((id) => document.getElementById(id)?.classList.remove('hidden'));
+        const titleEl = document.getElementById('topBarPageTitle');
+        if (titleEl && validSnapshot.title) titleEl.textContent = validSnapshot.title;
+      } else {
+        document.getElementById('viewCrew')?.classList.remove('hidden');
+        document.getElementById('roleWorkspaceQuickBar')?.classList.remove('hidden');
       }
-    } else {
-      document.getElementById('viewCrew')?.classList.remove('hidden');
-      document.getElementById('roleWorkspaceQuickBar')?.classList.remove('hidden');
+    } finally {
+      nav.isHandlingPop = false;
     }
 
     if (typeof window.refreshRoleUiVisibility === 'function') {
@@ -229,6 +279,15 @@
     } catch {}
   }
 
+  function isCompletelyAtHome() {
+    if (findTopOpenModal()) return false;
+    if (isSideMenuOpen()) return false;
+    if (isBlueprintFullscreen()) return false;
+    if (isBlueprintMeasureOpen()) return false;
+    if (nav.viewStack.length > 0) return false;
+    return getActiveTopModule() === 'home';
+  }
+
   function rewindStaleHistoryIfAtHome() {
     const curDepth = Number(window.history.state?.actDepth) || 0;
     if (curDepth > 0 && isCompletelyAtHome()) {
@@ -240,16 +299,6 @@
         nav.suppressNextPop = false;
       }
     }
-  }
-
-  function isCompletelyAtHome() {
-    if (findTopOpenModal()) return false;
-    if (isSideMenuOpen()) return false;
-    if (isBlueprintFullscreen()) return false;
-    if (isBlueprintMeasureOpen()) return false;
-    if (nav.viewStack.length > 0) return false;
-    const mod = getActiveTopModule();
-    return mod === 'home';
   }
 
   // =========================================================================
@@ -329,7 +378,6 @@
     } finally {
       nav.isHandlingPop = false;
       nav.lastSignature = computeLayerSignature();
-      // If we just landed on Home with leftover stale modal entries, rewind to root cleanly
       setTimeout(rewindStaleHistoryIfAtHome, 0);
     }
   }
@@ -358,7 +406,6 @@
     const added = nextParts.filter((p) => !prevParts.has(p));
     nav.lastSignature = nextSig;
 
-    // Only push when a new layer OPENED in response to a recent user interaction
     const recentGesture = Date.now() - nav.lastUserGestureAt < 2000;
     if (added.length > 0 && recentGesture) {
       const topAdded = added[added.length - 1];
@@ -367,8 +414,16 @@
     }
   }
 
+  function syncUserChange() {
+    const nextKey = getActiveUserKey();
+    if (nextKey !== nav.activeUserKey) {
+      nav.activeUserKey = nextKey;
+      nav.viewStack = [];
+      nav.homeSnapshot = null;
+    }
+  }
+
   function installObservers() {
-    // Track user gestures so Chrome/Android always treats our pushState as user-activated
     const markGesture = () => {
       nav.lastUserGestureAt = Date.now();
     };
@@ -396,6 +451,7 @@
     if (typeof prevSelectMenu === 'function') {
       window.selectMenuFeature = function (featureKey) {
         if (!nav.isHandlingPop) {
+          syncUserChange();
           if (nav.viewStack.length === 0) captureHomeSnapshotIfAtBase();
 
           const isSubModule =
@@ -410,7 +466,6 @@
               pushLayer(`view:${featureKey}`, true);
             }
           } else {
-            // Returning to a core/home tab clears secondary module history
             nav.viewStack = [];
           }
         }
@@ -422,11 +477,17 @@
     if (typeof prevOpenAdmin === 'function') {
       window.openAdminPage = function () {
         if (!nav.isHandlingPop) {
-          if (nav.viewStack.length === 0) captureHomeSnapshotIfAtBase();
-          const top = nav.viewStack[nav.viewStack.length - 1];
-          if (!top || top.kind !== 'admin') {
-            nav.viewStack.push({ kind: 'admin' });
-            pushLayer('view:admin', true);
+          syncUserChange();
+          if (getEffectiveRole() === 'admin') {
+            nav.viewStack = [];
+            nav.homeSnapshot = null;
+          } else {
+            if (nav.viewStack.length === 0) captureHomeSnapshotIfAtBase();
+            const top = nav.viewStack[nav.viewStack.length - 1];
+            if (!top || top.kind !== 'admin') {
+              nav.viewStack.push({ kind: 'admin' });
+              pushLayer('view:admin', true);
+            }
           }
         }
         return prevOpenAdmin.apply(this, arguments);
@@ -437,6 +498,7 @@
     if (typeof prevPersonalCard === 'function') {
       window.openMyPersonalCardView = function () {
         if (!nav.isHandlingPop) {
+          syncUserChange();
           nav.viewStack = [];
         }
         return prevPersonalCard.apply(this, arguments);
@@ -446,15 +508,35 @@
     const prevLogout = window.logoutUser;
     if (typeof prevLogout === 'function') {
       window.logoutUser = function () {
+        nav.activeUserKey = '';
         nav.viewStack = [];
         nav.homeSnapshot = null;
         return prevLogout.apply(this, arguments);
+      };
+    }
+
+    const prevRefreshRole = window.refreshRoleUiVisibility;
+    if (typeof prevRefreshRole === 'function') {
+      window.refreshRoleUiVisibility = function () {
+        const res = prevRefreshRole.apply(this, arguments);
+        syncUserChange();
+        return res;
+      };
+    }
+
+    const prevUpdateTopBar = window.updateTopBarIndicators;
+    if (typeof prevUpdateTopBar === 'function') {
+      window.updateTopBarIndicators = function () {
+        const res = prevUpdateTopBar.apply(this, arguments);
+        syncUserChange();
+        return res;
       };
     }
   }
 
   function boot() {
     initRootHistoryState();
+    nav.activeUserKey = getActiveUserKey();
     installNavigationWrappers();
     installObservers();
     nav.lastSignature = computeLayerSignature();
