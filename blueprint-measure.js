@@ -1,6 +1,6 @@
 // =========================================================================
-// ACT MASTER - BLUEPRINT REFERENCE MEASUREMENTS (blueprint-measure.js)
-// Drop-in Distance & Surface Area measurement overlay + Landscape/Fullscreen UX
+// ACT MASTER - BLUEPRINT REFERENCE MEASUREMENTS & TOOLBAR POLISH (blueprint-measure.js)
+// Drop-in Distance & Surface Area measurement overlay + Landscape/Fullscreen/Toolbar UX
 // - Role guards:
 //     Supervisor / PM / Admin: Calibrate & Recalibrate sheets (shared in Supabase)
 //     Crew:                    Measure Distance & Area on calibrated sheets (read-only scale)
@@ -8,7 +8,9 @@
 //   and individual segment lengths on screen
 // - Per-user saved measurements synced across devices via `blueprint_user_measurements`
 // - Phone Landscape: Auto-compacts Measure Dock into a single ~42px horizontal strip
-// - Collapsible Measure Dock (▾) + One-tap Fullscreen (⛶ Full) for field drawings
+// - Collapsible Measure Dock (▾) + One-tap Fullscreen (⛶ Full)
+// - Clean Mobile Toolbar: packs secondary Blueprint tools into `⋯` popover &
+//   hides the drawing action strip when no blueprint is open
 // =========================================================================
 (function initBlueprintMeasure() {
   'use strict';
@@ -46,6 +48,7 @@
     orthoSnap: false,
     dockCollapsed: false,
     fullscreen: false,
+    toolsPopoverOpen: false,
     pageScale: null, // { scale_label, calibration_mode, width_ft, height_ft, calibrated_by, updated_at }
     scaleCache: loadLocalJSON(LOCAL_SCALE_CACHE_KEY, {}),
     savedCache: loadLocalJSON(LOCAL_MEASURES_CACHE_KEY, {}),
@@ -53,7 +56,6 @@
     currentUserPageKey: '',
 
     // Measurements on active page (unsaved + current user's saved)
-    // [{ id, type: 'distance'|'area', points: [{x,y}], closed: bool, saved: bool, name: string, updatedAt: string }]
     shapes: [],
     activeShapeId: null,
     selectedShapeId: null,
@@ -61,7 +63,7 @@
     isSaving: false,
 
     // 2-Point Calibration points
-    calPoints: [], // [{x, y}, {x, y}]
+    calPoints: [],
 
     // Tap vs Pan detection on viewport
     tapCandidate: null,
@@ -71,9 +73,10 @@
     // Vertex drag fine-tuning
     draggingHandle: null,
 
-    // Modal state
-    modalTab: 'two_point', // 'two_point' | 'preset'
-    mounted: false
+    // Modal & mount state
+    modalTab: 'two_point',
+    mounted: false,
+    viewObserver: null
   };
 
   // =========================================================================
@@ -613,7 +616,7 @@
   }
 
   // =========================================================================
-  // 4. FULLSCREEN FOCUS MODE (HIDES TOP CHROME FOR LANDSCAPE FIELD VIEWING)
+  // 4. CLEAN TOOLBAR OVERFLOW (`⋯` POPOVER), EMPTY-STATE HIDE & FULLSCREEN
   // =========================================================================
   function tagBlueprintTopChrome() {
     const view = document.getElementById('viewBlueprints');
@@ -631,9 +634,170 @@
     }
   }
 
+  function findActionToolbarRow() {
+    const measureBtn = document.getElementById('bpToggleMeasureBtn');
+    if (measureBtn?.parentElement) return measureBtn.parentElement;
+
+    const addLinkBtn = document.getElementById('bpToggleAddLinkBtn');
+    if (addLinkBtn?.parentElement && addLinkBtn.parentElement.id !== 'bpToolsPopoverMenu') {
+      return addLinkBtn.parentElement;
+    }
+
+    const fitBtn = document.getElementById('bpZoomFitBtn');
+    if (!fitBtn) return null;
+    const p = fitBtn.parentElement;
+    if (p && p.parentElement && p.parentElement.querySelector('#bpToggleAddLinkBtn, #bpSaveOfflineBtn')) {
+      return p.parentElement;
+    }
+    return p;
+  }
+
+  function ensureToolsPopover() {
+    let pop = document.getElementById('bpToolsPopoverMenu');
+    if (pop) return pop;
+
+    pop = document.createElement('div');
+    pop.id = 'bpToolsPopoverMenu';
+    pop.setAttribute('data-bp-measure-ui', '1');
+    pop.className = 'hidden';
+
+    // Auto-close popover right after a secondary tool inside it is clicked
+    pop.addEventListener('click', (e) => {
+      if (e.target.closest('button')) {
+        setTimeout(() => {
+          closeToolsPopover();
+          updateToolsButtonIndicator();
+        }, 60);
+      }
+    });
+
+    document.body.appendChild(pop);
+    return pop;
+  }
+
+  function openToolsPopover() {
+    const pop = ensureToolsPopover();
+    const btn = document.getElementById('bpToolsMenuBtn');
+    if (!btn) return;
+
+    const rect = btn.getBoundingClientRect();
+    pop.style.top = `${Math.round(rect.bottom + 6)}px`;
+    pop.style.right = `${Math.max(8, Math.round(window.innerWidth - rect.right))}px`;
+    pop.classList.remove('hidden');
+    mState.toolsPopoverOpen = true;
+    btn.setAttribute('aria-expanded', 'true');
+  }
+
+  function closeToolsPopover() {
+    const pop = document.getElementById('bpToolsPopoverMenu');
+    if (pop) pop.classList.add('hidden');
+    mState.toolsPopoverOpen = false;
+    document.getElementById('bpToolsMenuBtn')?.setAttribute('aria-expanded', 'false');
+  }
+
+  function updateToolsButtonIndicator() {
+    const dot = document.getElementById('bpToolsActiveDot');
+    const pop = document.getElementById('bpToolsPopoverMenu');
+    const menuBtn = document.getElementById('bpToolsMenuBtn');
+    if (!pop || !menuBtn) return;
+
+    // Hide `⋯` button if all moved tools are hidden for this role
+    const hasVisibleTool = Array.from(pop.children).some((el) => !el.classList.contains('hidden'));
+    menuBtn.classList.toggle('hidden', !hasVisibleTool);
+
+    if (!dot) return;
+    // Light up small indicator dot if Add/Edit Callout Link mode is active
+    const addLinkBtn = document.getElementById('bpToggleAddLinkBtn');
+    const addLinkActive = Boolean(
+      addLinkBtn &&
+        !addLinkBtn.classList.contains('hidden') &&
+        /(bg-amber-500|bg-amber-400|bg-sky-500|bg-emerald-500|bg-indigo-500)(?!\/)/.test(addLinkBtn.className || '')
+    );
+    dot.classList.toggle('hidden', !addLinkActive);
+  }
+
+  function organizeToolbarOverflow() {
+    const actionRow = findActionToolbarRow();
+    if (!actionRow) return;
+    actionRow.classList.add('bp-action-row');
+
+    const pop = ensureToolsPopover();
+
+    // Ensure `⋯` Tools button exists inside actionRow
+    let toolsBtn = document.getElementById('bpToolsMenuBtn');
+    if (!toolsBtn) {
+      toolsBtn = document.createElement('button');
+      toolsBtn.id = 'bpToolsMenuBtn';
+      toolsBtn.type = 'button';
+      toolsBtn.title = 'More Blueprint Tools';
+      toolsBtn.setAttribute('aria-haspopup', 'true');
+      toolsBtn.setAttribute('aria-expanded', 'false');
+      toolsBtn.className =
+        'relative h-8 px-2.5 rounded-lg text-xs font-extrabold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center justify-center gap-1 transition shrink-0';
+      toolsBtn.innerHTML = `
+        <span class="tracking-widest leading-none">⋯</span>
+        <span id="bpToolsActiveDot" class="hidden w-2 h-2 rounded-full bg-amber-400"></span>
+      `;
+      toolsBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (mState.toolsPopoverOpen) closeToolsPopover();
+        else openToolsPopover();
+      });
+      actionRow.appendChild(toolsBtn);
+    }
+
+    // Identify the zoom group (direct child containing #bpZoomFitBtn)
+    const fitBtn = document.getElementById('bpZoomFitBtn');
+    let zoomChild = null;
+    if (fitBtn) {
+      let cur = fitBtn;
+      while (cur && cur.parentElement !== actionRow) cur = cur.parentElement;
+      if (cur && cur.parentElement === actionRow) zoomChild = cur;
+    }
+
+    const coreIds = new Set(['bpToggleMeasureBtn', 'bpToggleFullscreenBtn', 'bpToolsMenuBtn']);
+
+    // Move secondary controls (Re-Scan Links, Add/Edit Callout Link, Available Offline, etc.) into popover
+    Array.from(actionRow.children).forEach((child) => {
+      if (child === zoomChild) return;
+      if (coreIds.has(child.id)) return;
+      // Preserve individual zoom controls if Fit wasn't inside a wrapper div
+      if (!zoomChild && /zoom|fit/i.test(child.id || '')) return;
+      pop.appendChild(child);
+    });
+
+    // Keep clean consistent order: Zoom | Measure | Full | ⋯
+    const measureBtn = document.getElementById('bpToggleMeasureBtn');
+    const fsBtn = document.getElementById('bpToggleFullscreenBtn');
+    if (measureBtn) actionRow.appendChild(measureBtn);
+    if (fsBtn) actionRow.appendChild(fsBtn);
+    actionRow.appendChild(toolsBtn);
+
+    updateToolsButtonIndicator();
+  }
+
+  function syncToolbarEmptyState() {
+    const actionRow = findActionToolbarRow();
+    if (!actionRow) return;
+
+    const s = getViewerState();
+    const hasDoc = Boolean(s?.activeDoc);
+    actionRow.classList.toggle('bp-action-row-empty', !hasDoc);
+
+    if (!hasDoc) {
+      closeToolsPopover();
+      if (mState.fullscreen) setFullscreen(false);
+    } else {
+      organizeToolbarOverflow();
+    }
+  }
+
   function setFullscreen(enabled) {
     const next = Boolean(enabled);
-    if (next) tagBlueprintTopChrome();
+    if (next) {
+      closeToolsPopover();
+      tagBlueprintTopChrome();
+    }
     mState.fullscreen = next;
     document.body.classList.toggle('bp-focus-fullscreen', next);
     renderFullscreenControls();
@@ -644,8 +808,8 @@
     const fsToolbarBtn = document.getElementById('bpToggleFullscreenBtn');
     if (fsToolbarBtn) {
       fsToolbarBtn.className = mState.fullscreen
-        ? 'px-2.5 py-1.5 rounded-lg text-xs font-extrabold bg-sky-500 text-slate-950 border border-sky-400 flex items-center gap-1 transition shrink-0'
-        : 'px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center gap-1 transition shrink-0';
+        ? 'h-8 px-2.5 rounded-lg text-xs font-extrabold bg-sky-500 text-slate-950 border border-sky-400 flex items-center gap-1 transition shrink-0'
+        : 'h-8 px-2.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center gap-1 transition shrink-0';
     }
 
     const floatBar = document.getElementById('bpFullscreenFloatBar');
@@ -677,7 +841,7 @@
   }
 
   // =========================================================================
-  // 5. DOM INJECTION & RESPONSIVE LANDSCAPE STYLING
+  // 5. DOM INJECTION & RESPONSIVE STYLING
   // =========================================================================
   function injectStyles() {
     let style = document.getElementById('bpMeasureStyles');
@@ -705,6 +869,57 @@
       #viewBlueprints.bp-measure-active [data-bp-measure-ui] input {
         cursor: text !important;
       }
+
+      /* Clean Blueprints Action Bar (No horizontal overflow + Hidden when empty) */
+      .bp-action-row {
+        display: flex !important;
+        align-items: center !important;
+        gap: 6px !important;
+        overflow: visible !important;
+      }
+      .bp-action-row #bpToggleMeasureBtn {
+        margin-left: auto !important;
+      }
+      .bp-action-row.bp-action-row-empty {
+        display: none !important;
+      }
+
+      /* Secondary Tools Popover (`⋯`) */
+      #bpToolsPopoverMenu {
+        position: fixed;
+        z-index: 88;
+        width: 244px;
+        max-width: calc(100vw - 16px);
+        padding: 6px;
+        border-radius: 10px;
+        background-color: #0f172a;
+        border: 1px solid #334155;
+        box-shadow: 0 14px 34px rgba(0, 0, 0, 0.6);
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      #bpToolsPopoverMenu.hidden {
+        display: none !important;
+      }
+      #bpToolsPopoverMenu > *:not(.hidden) {
+        width: 100% !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: flex-start !important;
+        gap: 8px !important;
+        padding: 8px 10px !important;
+        border-radius: 6px !important;
+        font-size: 12px !important;
+        text-align: left !important;
+        margin: 0 !important;
+      }
+      html.act-light #bpToolsPopoverMenu {
+        background-color: #ffffff !important;
+        border-color: #94a3b8 !important;
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.18) !important;
+      }
+
       #bpMeasureStageLayer {
         position: absolute;
         inset: 0;
@@ -811,10 +1026,10 @@
         width: auto !important;
         max-width: calc(100% - 20px) !important;
         padding: 6px 10px !important;
-        border-radius: 14px !important;
+        border-radius: 10px !important;
       }
 
-      /* Phone Landscape Single-Row Measure Bar (max-height: 540px leaves tablets/desktops untouched) */
+      /* Phone Landscape Single-Row Measure Bar */
       @media (orientation: landscape) and (max-height: 540px) {
         #bpMeasureDock:not(.is-collapsed) {
           left: 8px !important;
@@ -824,7 +1039,7 @@
           width: auto !important;
           max-width: none !important;
           padding: 5px 8px !important;
-          border-radius: 12px !important;
+          border-radius: 10px !important;
           display: flex !important;
           flex-direction: row !important;
           align-items: center !important;
@@ -863,7 +1078,7 @@
           flex: 1 1 auto;
           min-width: 140px;
           padding: 4px 8px !important;
-          border-radius: 8px !important;
+          border-radius: 6px !important;
         }
         #bpMeasureDock:not(.is-collapsed) .bp-mdock-readout-val {
           font-size: 13px !important;
@@ -885,7 +1100,7 @@
           padding-bottom: 5px !important;
           padding-left: 8px !important;
           padding-right: 8px !important;
-          border-radius: 8px !important;
+          border-radius: 6px !important;
           font-size: 11px !important;
         }
         #bpMeasureTotalsWrap {
@@ -899,7 +1114,7 @@
         #bpMeasureTotalsWrap #bpTotalsToggleBtn {
           padding: 5px 10px !important;
           font-size: 11px !important;
-          border-radius: 8px !important;
+          border-radius: 6px !important;
         }
         #bpMeasureTotalsWrap .bp-totals-scroll {
           max-height: 46dvh !important;
@@ -914,18 +1129,15 @@
   }
 
   function ensureToolbarButtons() {
-    const anchor =
-      document.getElementById('bpToggleAddLinkBtn') ||
-      document.getElementById('bpSaveOfflineBtn') ||
-      document.getElementById('bpZoomFitBtn');
-    if (!anchor || !anchor.parentNode) return;
+    const actionRow = findActionToolbarRow();
+    if (!actionRow) return;
 
     if (!document.getElementById('bpToggleMeasureBtn')) {
       const btn = document.createElement('button');
       btn.id = 'bpToggleMeasureBtn';
       btn.type = 'button';
       btn.className =
-        'px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center gap-1.5 transition shrink-0';
+        'h-8 px-2.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center gap-1 transition shrink-0';
       btn.title = 'Measure Distance & Area';
       btn.innerHTML = `<span>📐</span><span>Measure</span>`;
       btn.addEventListener('click', () => {
@@ -934,9 +1146,10 @@
           toast('Open a blueprint first to measure.', 'info');
           return;
         }
+        closeToolsPopover();
         setMeasureActive(!mState.active);
       });
-      anchor.parentNode.insertBefore(btn, anchor);
+      actionRow.appendChild(btn);
     }
 
     if (!document.getElementById('bpToggleFullscreenBtn')) {
@@ -944,7 +1157,7 @@
       fsBtn.id = 'bpToggleFullscreenBtn';
       fsBtn.type = 'button';
       fsBtn.className =
-        'px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center gap-1 transition shrink-0';
+        'h-8 px-2.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center gap-1 transition shrink-0';
       fsBtn.title = 'Fullscreen Drawing View';
       fsBtn.innerHTML = `<span>⛶</span><span>Full</span>`;
       fsBtn.addEventListener('click', () => {
@@ -955,9 +1168,10 @@
         }
         setFullscreen(!mState.fullscreen);
       });
-      const measureBtn = document.getElementById('bpToggleMeasureBtn');
-      anchor.parentNode.insertBefore(fsBtn, measureBtn || anchor);
+      actionRow.appendChild(fsBtn);
     }
+
+    organizeToolbarOverflow();
   }
 
   function ensureStageLayer() {
@@ -1865,7 +2079,6 @@
     const displayShape =
       getActiveShape() || selectedShape || (mState.shapes.length > 0 ? mState.shapes[mState.shapes.length - 1] : null);
 
-    // Minimized Pill Mode (when user taps ▾)
     if (mState.dockCollapsed && mState.tool !== 'calibrate') {
       dock.classList.add('is-collapsed');
       let compactLabel = mState.tool === 'area' ? 'Area' : 'Distance';
@@ -2111,7 +2324,6 @@
       </div>
     `;
 
-    // Wire dock buttons
     document.getElementById('bpDockCloseBtn').onclick = () => setMeasureActive(false);
     document.getElementById('bpDockCollapseBtn').onclick = () => {
       mState.dockCollapsed = true;
@@ -2249,10 +2461,11 @@
     if (view) view.classList.toggle('bp-measure-active', mState.active);
     if (toggleBtn) {
       toggleBtn.className = mState.active
-        ? 'px-2.5 py-1.5 rounded-lg text-xs font-extrabold bg-emerald-500 text-slate-950 border border-emerald-400 flex items-center gap-1.5 transition shrink-0'
-        : 'px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center gap-1.5 transition shrink-0';
+        ? 'h-8 px-2.5 rounded-lg text-xs font-extrabold bg-emerald-500 text-slate-950 border border-emerald-400 flex items-center gap-1 transition shrink-0'
+        : 'h-8 px-2.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center gap-1 transition shrink-0';
     }
 
+    syncToolbarEmptyState();
     renderFullscreenControls();
     renderTopBanner();
     renderTopTotalsDropdown();
@@ -2395,21 +2608,49 @@
     ensureFloatingDock();
     tagBlueprintTopChrome();
     bindViewportTapHandler();
+    syncToolbarEmptyState();
 
     if (!mState.mounted) {
+      mState.mounted = true;
+
+      document.addEventListener('click', (e) => {
+        if (!mState.toolsPopoverOpen) return;
+        const pop = document.getElementById('bpToolsPopoverMenu');
+        const btn = document.getElementById('bpToolsMenuBtn');
+        if (pop?.contains(e.target) || btn?.contains(e.target)) return;
+        closeToolsPopover();
+      });
+
       document.addEventListener('keydown', (e) => {
-        if (e.key === 'Escape' && mState.fullscreen) {
-          setFullscreen(false);
+        if (e.key === 'Escape') {
+          if (mState.toolsPopoverOpen) closeToolsPopover();
+          else if (mState.fullscreen) setFullscreen(false);
         }
       });
+
+      window.addEventListener('resize', () => {
+        if (mState.toolsPopoverOpen) closeToolsPopover();
+      });
+
+      const viewEl = document.getElementById('viewBlueprints');
+      if (viewEl && !mState.viewObserver) {
+        mState.viewObserver = new MutationObserver(() => {
+          if (!viewEl.classList.contains('hidden')) {
+            syncToolbarEmptyState();
+          } else {
+            closeToolsPopover();
+          }
+        });
+        mState.viewObserver.observe(viewEl, { attributes: true, attributeFilter: ['class'] });
+      }
     }
-    mState.mounted = true;
   }
 
   function setMeasureActive(enabled) {
     mountIfReady();
     const next = Boolean(enabled);
     if (next) {
+      closeToolsPopover();
       getBridge()?.disableAddLinkMode?.();
     }
     mState.active = next;
@@ -2432,6 +2673,7 @@
     setFullscreen,
     onPageRendered() {
       mountIfReady();
+      syncToolbarEmptyState();
       const s = getViewerState();
       const nextDocKey = getDocPageKey(s);
       const nextUserKey = getUserPageKey(s);
@@ -2457,6 +2699,8 @@
     },
     onHeaderUpdated() {
       mountIfReady();
+      syncToolbarEmptyState();
+      updateToolsButtonIndicator();
       renderFullscreenControls();
       if (mState.active) {
         renderTopTotalsDropdown();
@@ -2464,12 +2708,14 @@
       }
     },
     onViewerClosed() {
+      closeToolsPopover();
       mState.currentUserPageKey = '';
       mState.shapes = [];
       mState.activeShapeId = null;
       mState.selectedShapeId = null;
       if (mState.fullscreen) setFullscreen(false);
       setMeasureActive(false);
+      syncToolbarEmptyState();
     }
   };
 
