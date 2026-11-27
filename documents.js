@@ -6,7 +6,7 @@
 // - Role guards:
 //     Admin:                Upload, Edit, Delete, View & Download
 //     PM / Supv / Crew:     View & Download only
-// - Built-in scrollable PDF.js & image viewer so mobile users stay inside ACT
+// - Compact single-row list UI (tap row to open in built-in PDF.js/image viewer)
 // =========================================================================
 (function initACTDocuments() {
   'use strict';
@@ -292,7 +292,6 @@
       throw new Error(`Database save failed: ${dbErr.message}`);
     }
 
-    // Clean up replaced storage file if admin swapped the file during edit
     if (oldStoragePathToReplace && oldStoragePathToReplace !== storagePath) {
       sb.storage.from(STORAGE_BUCKET).remove([oldStoragePathToReplace]).catch(() => {});
     }
@@ -382,7 +381,6 @@
       anchor.parentNode.insertBefore(btn, anchor.nextSibling);
     }
 
-    // Visible to ALL roles (Admin, PM, Supervisor, Crew)
     btn.classList.remove('hidden');
     return btn;
   }
@@ -405,8 +403,8 @@
     view.className =
       'hidden fixed inset-x-0 bottom-0 z-30 bg-slate-950 text-slate-100 flex flex-col overflow-hidden';
     view.innerHTML = `
-      <div id="actDocsToolbar" class="shrink-0 bg-slate-900/95 border-b border-slate-800 px-3 py-2.5 space-y-2.5"></div>
-      <div id="actDocsBody" class="flex-1 min-h-0 overflow-y-auto p-3 sm:p-4"></div>
+      <div id="actDocsToolbar" class="shrink-0 bg-slate-900/95 border-b border-slate-800 px-3 py-2 space-y-2"></div>
+      <div id="actDocsBody" class="flex-1 min-h-0 overflow-y-auto p-2.5 sm:p-4"></div>
     `;
     document.body.appendChild(view);
 
@@ -424,18 +422,18 @@
     modal.className =
       'hidden fixed inset-0 z-[92] bg-slate-950/95 flex flex-col overflow-hidden text-slate-100';
     modal.innerHTML = `
-      <div class="shrink-0 bg-slate-900 border-b border-slate-800 px-3 py-2.5 flex items-center justify-between gap-2">
+      <div class="shrink-0 bg-slate-900 border-b border-slate-800 px-3 py-2 flex items-center justify-between gap-2">
         <div class="min-w-0 flex-1">
           <div id="actDocsViewerTitle" class="text-sm font-extrabold text-white truncate"></div>
           <div id="actDocsViewerSub" class="text-[11px] text-slate-400 truncate"></div>
         </div>
         <div class="flex items-center gap-1.5 shrink-0">
           <button id="actDocsViewerDownloadBtn" type="button"
-            class="h-9 px-3 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-extrabold flex items-center gap-1">
+            class="h-8 px-3 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 text-xs font-extrabold flex items-center gap-1">
             <span>↓</span><span>Download</span>
           </button>
           <button id="actDocsViewerCloseBtn" type="button"
-            class="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-xl leading-none text-slate-200 flex items-center justify-center">&times;</button>
+            class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-lg leading-none text-slate-200 flex items-center justify-center">&times;</button>
         </div>
       </div>
       <div id="actDocsViewerBody" class="flex-1 min-h-0 overflow-y-auto p-3 sm:p-5 flex flex-col items-center gap-3"></div>
@@ -452,16 +450,16 @@
     modal.className =
       'hidden fixed inset-0 z-[94] bg-slate-950/80 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4';
     modal.innerHTML = `
-      <div class="w-full max-w-md rounded-t-3xl sm:rounded-2xl bg-slate-900 border border-slate-700 shadow-2xl overflow-hidden text-slate-100">
-        <div class="flex items-center justify-between px-4 py-3.5 border-b border-slate-800">
+      <div class="w-full max-w-md rounded-t-2xl sm:rounded-xl bg-slate-900 border border-slate-700 shadow-2xl overflow-hidden text-slate-100">
+        <div class="flex items-center justify-between px-4 py-3 border-b border-slate-800">
           <div>
             <h3 id="actDocsUploadHeading" class="text-base font-extrabold text-white">Upload Company Document</h3>
             <p class="text-[11px] text-slate-400">Visible to all employees (read-only)</p>
           </div>
           <button id="actDocsUploadCloseBtn" type="button"
-            class="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 text-xl leading-none text-slate-300">&times;</button>
+            class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-lg leading-none text-slate-300">&times;</button>
         </div>
-        <form id="actDocsUploadForm" class="p-4 space-y-3.5 max-h-[82vh] overflow-y-auto"></form>
+        <form id="actDocsUploadForm" class="p-4 space-y-3 max-h-[82vh] overflow-y-auto"></form>
       </div>
     `;
     document.body.appendChild(modal);
@@ -473,21 +471,26 @@
   }
 
   // =========================================================================
-  // 4. RENDER TOOLBAR & DOCUMENT LIST
+  // 4. RENDER COMPACT TOOLBAR & SINGLE-ROW DOCUMENT LIST
   // =========================================================================
   function renderToolbar() {
     const bar = document.getElementById('actDocsToolbar');
     if (!bar) return;
 
     const usedCategories = new Set(docState.docs.map((d) => d.category || 'Other'));
-    const pillCategories = ['All', ...CATEGORIES.filter((c) => usedCategories.has(c) || c === docState.activeCategory)];
+    if (docState.activeCategory !== 'All' && !usedCategories.has(docState.activeCategory)) {
+      docState.activeCategory = 'All';
+    }
+
+    const showCategoryRow = usedCategories.size > 1;
+    const pillCategories = ['All', ...CATEGORIES.filter((c) => usedCategories.has(c))];
 
     const pillsHtml = pillCategories
       .map((cat) => {
         const active = docState.activeCategory === cat;
         return `
           <button type="button" data-doc-cat="${esc(cat)}"
-            class="h-7 px-3 rounded-lg border text-xs font-bold shrink-0 transition ${
+            class="h-7 px-2.5 rounded-md border text-[11px] font-bold shrink-0 transition ${
               active
                 ? 'bg-sky-500 text-slate-950 border-sky-400'
                 : 'bg-slate-950 text-slate-300 border-slate-800 hover:border-slate-600'
@@ -499,29 +502,31 @@
       .join('');
 
     bar.innerHTML = `
-      <div class="flex items-center gap-2 max-w-4xl mx-auto w-full">
+      <div class="flex items-center gap-1.5 max-w-4xl mx-auto w-full">
         <div class="relative flex-1 min-w-0">
-          <input id="actDocsSearchInput" type="search" placeholder="Search handbooks, insurance, forms…"
+          <input id="actDocsSearchInput" type="search" placeholder="Search documents…"
             value="${esc(docState.searchQuery)}"
-            class="w-full h-9 pl-3 pr-3 rounded-xl bg-slate-950 border border-slate-700/80 text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500" />
+            class="w-full h-9 pl-3 pr-2.5 rounded-lg bg-slate-950 border border-slate-700/80 text-xs sm:text-sm text-white placeholder-slate-500 focus:outline-none focus:border-sky-500" />
         </div>
         <button id="actDocsRefreshBtn" type="button" title="Refresh list" ${docState.loading ? 'disabled' : ''}
-          class="w-9 h-9 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-50 border border-slate-700/80 text-xs font-bold text-slate-200 flex items-center justify-center shrink-0">
+          class="w-9 h-9 rounded-lg bg-slate-800 hover:bg-slate-700 disabled:opacity-50 border border-slate-700/80 text-xs font-bold text-slate-200 flex items-center justify-center shrink-0">
           ${docState.loading ? '…' : '↻'}
         </button>
         ${
           isAdminUser()
             ? `<button id="actDocsOpenUploadBtn" type="button"
-                class="h-9 px-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-extrabold flex items-center gap-1 shrink-0">
+                class="h-9 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-extrabold flex items-center gap-1 shrink-0">
                 <span>+</span><span>Upload</span>
               </button>`
             : ''
         }
       </div>
 
-      <div class="act-docs-no-scrollbar flex items-center gap-1.5 overflow-x-auto max-w-4xl mx-auto w-full">
-        ${pillsHtml}
-      </div>
+      ${
+        showCategoryRow
+          ? `<div class="act-docs-no-scrollbar flex items-center gap-1.5 overflow-x-auto max-w-4xl mx-auto w-full">${pillsHtml}</div>`
+          : ''
+      }
     `;
 
     const searchInput = document.getElementById('actDocsSearchInput');
@@ -554,13 +559,13 @@
 
     const notes = [];
     if (!isAppOnline()) {
-      notes.push('Offline mode — showing cached document list. Connect to open or download files.');
+      notes.push('Offline mode — showing cached list. Connect to open or download files.');
     }
     if (docState.errorMsg) notes.push(docState.errorMsg);
 
     const bannerHtml = notes.length
       ? `
-        <div class="max-w-4xl mx-auto mb-3 rounded-xl bg-amber-500/15 border border-amber-400/40 px-3.5 py-2.5 text-xs text-amber-200 space-y-1">
+        <div class="max-w-4xl mx-auto mb-2.5 rounded-lg bg-amber-500/15 border border-amber-400/40 px-3 py-2 text-xs text-amber-200 space-y-1">
           ${notes.map((n) => `<div>${esc(n)}</div>`).join('')}
         </div>
       `
@@ -588,7 +593,7 @@
       const isFiltered = docState.docs.length > 0;
       body.innerHTML = `
         ${bannerHtml}
-        <div class="max-w-md mx-auto mt-10 rounded-2xl bg-slate-900 border border-slate-800 p-6 text-center space-y-3">
+        <div class="max-w-md mx-auto mt-10 rounded-xl bg-slate-900 border border-slate-800 p-6 text-center space-y-3">
           <div class="text-3xl">📄</div>
           <h3 class="text-base font-extrabold text-white">
             ${isFiltered ? 'No Matching Documents' : 'No Company Documents Yet'}
@@ -598,14 +603,14 @@
               isFiltered
                 ? 'Try clearing your search or switching back to "All" categories.'
                 : isAdminUser()
-                ? 'Upload your Employee Handbook, insurance cards, safety policies, or company forms so every employee can access them.'
+                ? 'Upload your Employee Handbook, insurance info, safety policies, or company forms for all employees.'
                 : 'Company handbooks, insurance details, and reference documents will appear here once uploaded.'
             }
           </p>
           ${
             !isFiltered && isAdminUser()
               ? `<button id="actDocsEmptyUploadBtn" type="button"
-                  class="px-4 py-2.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-extrabold text-xs">
+                  class="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold text-xs">
                   + Upload First Document
                 </button>`
               : ''
@@ -618,55 +623,57 @@
     }
 
     const admin = isAdminUser();
-    const cardsHtml = filtered
+    const usedCategories = new Set(docState.docs.map((d) => d.category || 'Other'));
+    const showRowCategoryPill = docState.activeCategory === 'All' && usedCategories.size > 1;
+
+    const rowsHtml = filtered
       .map((doc) => {
         const fk = getFileKind(doc);
         const cat = doc.category || 'Other';
         const catCls = CATEGORY_BADGES[cat] || CATEGORY_BADGES.Other;
 
         return `
-          <div class="rounded-2xl bg-slate-900 border border-slate-800 hover:border-slate-700 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition">
+          <div class="flex items-center gap-2 px-3 py-2.5 border-b border-slate-800 last:border-b-0 hover:bg-slate-800/60 transition">
             <button type="button" data-view-doc="${esc(doc.id)}"
-              class="flex items-start gap-3 min-w-0 flex-1 text-left">
-              <div class="w-11 h-11 rounded-xl border ${fk.cls} flex items-center justify-center text-[11px] font-extrabold shrink-0 mt-0.5">
+              class="flex items-center gap-2.5 min-w-0 flex-1 text-left">
+              <div class="w-9 h-9 rounded-lg border ${fk.cls} flex items-center justify-center text-[10px] font-extrabold shrink-0">
                 ${fk.badge}
               </div>
-              <div class="min-w-0 flex-1 space-y-1">
-                <div class="flex items-center gap-2 flex-wrap">
-                  <span class="text-sm sm:text-base font-extrabold text-white leading-snug">${esc(doc.title)}</span>
-                  <span class="px-2 py-0.5 rounded-full border text-[10px] font-bold ${catCls}">${esc(cat)}</span>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-1.5 min-w-0">
+                  <span class="text-sm font-bold text-white truncate">${esc(doc.title)}</span>
+                  ${
+                    showRowCategoryPill
+                      ? `<span class="px-1.5 py-0.5 rounded border text-[9px] font-bold shrink-0 ${catCls}">${esc(cat)}</span>`
+                      : ''
+                  }
                 </div>
-                ${
-                  doc.description
-                    ? `<div class="text-xs text-slate-300 leading-relaxed">${esc(doc.description)}</div>`
-                    : ''
-                }
-                <div class="text-[11px] text-slate-500 font-mono truncate">
-                  ${esc(formatBytes(doc.file_size))}${doc.updated_at ? ` • Updated ${esc(formatDateShort(doc.updated_at))}` : ''}
+                <div class="text-[11px] text-slate-400 truncate mt-0.5">
+                  ${
+                    doc.description
+                      ? `${esc(doc.description)} • `
+                      : ''
+                  }<span class="font-mono text-slate-500">${esc(formatBytes(doc.file_size))}${doc.updated_at ? ` • ${esc(formatDateShort(doc.updated_at))}` : ''}</span>
                 </div>
               </div>
             </button>
 
-            <div class="flex items-center justify-end gap-1.5 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-800/80">
-              <button type="button" data-view-doc="${esc(doc.id)}"
-                class="h-9 px-3.5 rounded-xl bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 text-xs font-bold">
-                View
-              </button>
-              ${
-                admin
-                  ? `
-                    <button type="button" data-edit-doc="${esc(doc.id)}"
-                      class="h-9 px-3 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-bold">
-                      Edit
+            ${
+              admin
+                ? `
+                  <div class="flex items-center gap-1 shrink-0">
+                    <button type="button" data-edit-doc="${esc(doc.id)}" title="Edit document"
+                      class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 text-xs font-bold flex items-center justify-center">
+                      ✎
                     </button>
-                    <button type="button" data-delete-doc="${esc(doc.id)}"
-                      class="h-9 px-3 rounded-xl bg-rose-500/15 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 text-xs font-bold">
-                      Delete
+                    <button type="button" data-delete-doc="${esc(doc.id)}" title="Delete document"
+                      class="w-8 h-8 rounded-lg bg-rose-500/15 hover:bg-rose-500/30 border border-rose-500/30 text-rose-300 text-xs font-bold flex items-center justify-center">
+                      ✕
                     </button>
-                  `
-                  : ''
-              }
-            </div>
+                  </div>
+                `
+                : `<span class="text-slate-500 text-sm font-bold px-1 shrink-0 pointer-events-none">›</span>`
+            }
           </div>
         `;
       })
@@ -674,8 +681,8 @@
 
     body.innerHTML = `
       ${bannerHtml}
-      <div class="max-w-4xl mx-auto space-y-2.5">
-        ${cardsHtml}
+      <div class="max-w-4xl mx-auto rounded-xl bg-slate-900 border border-slate-800 overflow-hidden">
+        ${rowsHtml}
       </div>
     `;
 
@@ -688,7 +695,8 @@
     });
 
     body.querySelectorAll('[data-edit-doc]').forEach((btn) => {
-      btn.onclick = () => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
         const id = btn.getAttribute('data-edit-doc');
         const doc = docState.docs.find((d) => d.id === id);
         if (doc) openUploadModal(doc);
@@ -696,7 +704,8 @@
     });
 
     body.querySelectorAll('[data-delete-doc]').forEach((btn) => {
-      btn.onclick = () => {
+      btn.onclick = (e) => {
+        e.stopPropagation();
         const id = btn.getAttribute('data-delete-doc');
         deleteDocumentById(id);
       };
@@ -763,7 +772,7 @@
         docState.activeObjectUrls.push(objUrl);
         body.innerHTML = `
           <img src="${objUrl}" alt="${esc(doc.title)}"
-            class="max-w-full rounded-xl border border-slate-800 shadow-2xl" />
+            class="max-w-full rounded-lg border border-slate-800 shadow-2xl" />
         `;
         return;
       }
@@ -802,7 +811,7 @@
           canvas.height = Math.floor(renderVp.height);
           canvas.style.width = `${Math.floor(unscaled.width * cssScale)}px`;
           canvas.style.height = `${Math.floor(unscaled.height * cssScale)}px`;
-          canvas.className = 'max-w-full rounded-lg shadow-xl bg-white';
+          canvas.className = 'max-w-full rounded shadow-xl bg-white';
 
           wrap.appendChild(canvas);
           if (totalPages > 1) {
@@ -821,16 +830,15 @@
         return;
       }
 
-      // Non-PDF/image files (Word, Excel, etc.)
       body.innerHTML = `
-        <div class="max-w-sm w-full mt-10 rounded-2xl bg-slate-900 border border-slate-800 p-6 text-center space-y-3">
+        <div class="max-w-sm w-full mt-10 rounded-xl bg-slate-900 border border-slate-800 p-6 text-center space-y-3">
           <div class="text-3xl">📎</div>
           <div class="text-sm font-extrabold text-white">${esc(doc.file_name)}</div>
           <p class="text-xs text-slate-400">
             This file type opens using your device's native viewer. Tap below to open or save a copy.
           </p>
           <button id="actDocsOpenNativeBtn" type="button"
-            class="w-full py-3 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-xs">
+            class="w-full py-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-xs">
             Open / Download File
           </button>
         </div>
@@ -839,10 +847,10 @@
     } catch (err) {
       if (serial !== docState.viewerRenderSerial) return;
       body.innerHTML = `
-        <div class="max-w-md w-full mt-8 rounded-2xl bg-rose-500/15 border border-rose-400/40 p-5 text-center space-y-3">
+        <div class="max-w-md w-full mt-8 rounded-xl bg-rose-500/15 border border-rose-400/40 p-5 text-center space-y-3">
           <div class="text-xs text-rose-200">${esc(err.message)}</div>
           <button id="actDocsFallbackDlBtn" type="button"
-            class="px-4 py-2 rounded-xl bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-xs">
+            class="px-4 py-2 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-xs">
             Try Direct Download
           </button>
         </div>
@@ -880,7 +888,7 @@
         </label>
         <input id="actDocsFileInput" type="file" ${docToEdit ? '' : 'required'}
           accept=".pdf,.png,.jpg,.jpeg,.webp,.doc,.docx,.xls,.xlsx,.txt"
-          class="w-full text-xs text-slate-300 file:mr-3 file:py-2 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-slate-800 file:text-slate-100 hover:file:bg-slate-700 bg-slate-950 border border-slate-700 rounded-xl p-1.5" />
+          class="w-full text-xs text-slate-300 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-xs file:font-bold file:bg-slate-800 file:text-slate-100 hover:file:bg-slate-700 bg-slate-950 border border-slate-700 rounded-lg p-1.5" />
         ${
           docToEdit
             ? `<div class="text-[10px] font-mono text-slate-500 mt-1 truncate">Current: ${esc(docToEdit.file_name)} (${formatBytes(docToEdit.file_size)})</div>`
@@ -892,13 +900,13 @@
         <label class="block text-[11px] font-bold text-slate-400 mb-1">Document Title</label>
         <input id="actDocsTitleInput" type="text" required placeholder="e.g. 2026 Employee Handbook, Health Insurance Guide"
           value="${esc(docToEdit?.title || '')}"
-          class="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white focus:outline-none focus:border-sky-500" />
+          class="w-full h-9 px-3 rounded-lg bg-slate-950 border border-slate-700 text-sm text-white focus:outline-none focus:border-sky-500" />
       </div>
 
       <div>
         <label class="block text-[11px] font-bold text-slate-400 mb-1">Category</label>
         <select id="actDocsCategorySelect"
-          class="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-sm text-white focus:outline-none focus:border-sky-500">
+          class="w-full h-9 px-3 rounded-lg bg-slate-950 border border-slate-700 text-sm text-white focus:outline-none focus:border-sky-500">
           ${catOptions}
         </select>
       </div>
@@ -906,13 +914,13 @@
       <div>
         <label class="block text-[11px] font-bold text-slate-400 mb-1">Short Note (optional)</label>
         <textarea id="actDocsDescInput" rows="2" placeholder="e.g. Group #12345 — updated Nov 2026"
-          class="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-sky-500">${esc(docToEdit?.description || '')}</textarea>
+          class="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-700 text-xs text-white focus:outline-none focus:border-sky-500">${esc(docToEdit?.description || '')}</textarea>
       </div>
 
-      <div id="actDocsUploadErr" class="hidden rounded-xl bg-rose-500/15 border border-rose-400/40 px-3 py-2 text-xs text-rose-200"></div>
+      <div id="actDocsUploadErr" class="hidden rounded-lg bg-rose-500/15 border border-rose-400/40 px-3 py-2 text-xs text-rose-200"></div>
 
       <button id="actDocsUploadSubmitBtn" type="submit"
-        class="w-full py-3 rounded-xl bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-extrabold text-xs transition">
+        class="w-full h-10 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-extrabold text-xs transition">
         ${docToEdit ? 'Save Changes' : 'Upload Document'}
       </button>
     `;
@@ -990,7 +998,7 @@
     docState.isOpen = true;
 
     const titleEl = document.getElementById('topBarPageTitle');
-    if (titleEl) titleEl.textContent = 'Documents';
+    if (titleEl) titleEl.textContent = 'Company Docs';
 
     if (typeof closeSideMenu === 'function') closeSideMenu();
 
