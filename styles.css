@@ -420,4 +420,52 @@ html.act-light #actDocsViewerModal {
     gap: 4px !important;
   }
 }
+/* =========================================================================
+   ACT MASTER - FLAT INDUSTRIAL UTILITY POLISH
+   Replaces bubbly SaaS radii with crisp CAD/field-ready corners & tighter spacing
+   ========================================================================= */
+.rounded-lg {
+  border-radius: 5px !important;
+}
+.rounded-xl {
+  border-radius: 6px !important;
+}
+.rounded-2xl {
+  border-radius: 8px !important;
+}
+.rounded-3xl {
+  border-radius: 10px !important;
+}
+.rounded-t-2xl,
+.rounded-t-3xl {
+  border-top-left-radius: 10px !important;
+  border-top-right-radius: 10px !important;
+}
+
+/* Tone down heavy glow/drop shadows for a flatter utility feel */
+.shadow-2xl {
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45) !important;
+}
+.shadow-xl {
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35) !important;
+}
+
+/* Tighter, cleaner My Personal Card / Receipts spacing on phones */
+#viewCrew {
+  padding-top: 2px;
+}
+#viewCrew > div {
+  margin-bottom: 10px !important;
+}
+
+/* Prevent #appModal from ever clipping its bottom buttons on short phone screens */
+#appModal > div {
+  max-height: 92dvh !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+#modalBody {
+  overflow-y: auto;
+  min-height: 0;
+}
 
