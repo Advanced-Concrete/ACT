@@ -125,35 +125,133 @@
       };
     }
 
-    // Remove static Payroll KPI card, Payroll tab button & Payroll menu item from index.html at runtime
+    // Remove static Payroll menu item & upgrade PM Hub into a compact 3-column utility layout
     function stripPayrollUiFromPmHub() {
-      const payrollKpi = document.getElementById('pmKpiPayroll');
-      const hoursKpi = document.getElementById('pmKpiHours');
-      if (payrollKpi) {
-        let card = payrollKpi;
-        while (card && card.parentElement && (!hoursKpi || !card.parentElement.contains(hoursKpi))) {
-          card = card.parentElement;
-        }
-        if (card && card.parentElement && (!hoursKpi || card.parentElement.contains(hoursKpi))) {
-          const grid = card.parentElement;
-          card.remove();
-          if (grid && typeof grid.className === 'string') {
-            grid.className = grid.className.replace(/\b(sm:|md:|lg:|xl:)?grid-cols-4\b/g, '$1grid-cols-3');
-          }
-        } else {
-          payrollKpi.remove();
-        }
-      }
-
-      const payrollTabBtn = document.getElementById('pmTabBtn_payroll');
-      if (payrollTabBtn) payrollTabBtn.remove();
-
       const prMenuBtn = document.getElementById('menuFeatPayroll');
       if (prMenuBtn) {
         prMenuBtn.classList.add('hidden');
         prMenuBtn.style.display = 'none';
       }
     }
+
+    function ensureCleanPmPortalLayout() {
+      const pmSection = document.getElementById('viewPmPortal');
+      if (!pmSection || pmSection.dataset.actCompactLayout === '1') return;
+
+      const prevPm = document.getElementById('pmPortalSelectedPm')?.value || 'ALL';
+      const prevJob = document.getElementById('pmPortalSelectedJob')?.value || 'ALL';
+      const prevEye = document.getElementById('pmHubEyebrow')?.textContent?.trim() || 'Project Workspace';
+      const prevHeading = document.getElementById('pmHubMainHeading')?.textContent?.trim() || 'PM Project Hub';
+
+      pmSection.dataset.actCompactLayout = '1';
+      pmSection.innerHTML = `
+        <div class="max-w-4xl mx-auto space-y-3">
+          <!-- Compact Header + Admin Manage Popover -->
+          <div class="bg-slate-900 border border-slate-800 rounded-xl p-3 space-y-2.5">
+            <div class="flex items-center justify-between gap-2">
+              <div class="min-w-0">
+                <div id="pmHubEyebrow" class="text-[10px] font-bold uppercase tracking-wider text-sky-400 truncate">${prevEye}</div>
+                <h1 id="pmHubMainHeading" class="text-base font-extrabold text-white truncate leading-tight">${prevHeading}</h1>
+              </div>
+
+              <div id="pmAdminManageWrap" class="relative shrink-0 hidden">
+                <button id="pmAdminManageBtn" type="button" onclick="togglePmManageMenu(event)"
+                  class="h-8 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs font-bold text-slate-100 flex items-center gap-1.5 transition">
+                  <span>⚙</span><span>Manage</span><span class="text-[9px] opacity-70">▾</span>
+                </button>
+                <div id="pmAdminManageMenu"
+                  class="hidden absolute right-0 mt-1.5 w-52 rounded-xl bg-slate-900 border border-slate-700 shadow-2xl p-1.5 space-y-1 z-40">
+                  <button type="button" onclick="closePmManageMenu(); openNewJobWithPmModal();"
+                    class="w-full px-2.5 py-2 rounded-lg hover:bg-slate-800 text-left text-xs font-bold text-emerald-300 flex items-center gap-2">
+                    <span>＋</span><span>New Job & Assign PM</span>
+                  </button>
+                  <button type="button" onclick="closePmManageMenu(); openAssignPmToExistingJobsModal();"
+                    class="w-full px-2.5 py-2 rounded-lg hover:bg-slate-800 text-left text-xs font-semibold text-slate-200 flex items-center gap-2">
+                    <span>✎</span><span>Edit Job PMs / Emails</span>
+                  </button>
+                  <button type="button" onclick="closePmManageMenu(); openUserRolesManagerModal();"
+                    class="w-full px-2.5 py-2 rounded-lg hover:bg-slate-800 text-left text-xs font-semibold text-slate-200 flex items-center gap-2">
+                    <span>👥</span><span>User Levels & Roles</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Side-by-Side Filters -->
+            <div class="grid grid-cols-2 gap-2">
+              <div class="min-w-0">
+                <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Project Manager</label>
+                <select id="pmPortalSelectedPm" onchange="handlePmPortalFilterChange()"
+                  class="w-full h-9 px-2.5 rounded-lg bg-slate-950 border border-slate-700 text-xs font-semibold text-white focus:outline-none focus:border-sky-500 truncate"></select>
+              </div>
+              <div class="min-w-0">
+                <label class="block text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">Job</label>
+                <select id="pmPortalSelectedJob" onchange="renderPmPortalContent()"
+                  class="w-full h-9 px-2.5 rounded-lg bg-slate-950 border border-slate-700 text-xs font-semibold text-white focus:outline-none focus:border-sky-500 truncate"></select>
+              </div>
+            </div>
+
+            <!-- Single-Row 3-Column KPI Strip -->
+            <div class="grid grid-cols-3 gap-2">
+              <button type="button" onclick="switchPmPortalTab('docs')"
+                class="rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-700 px-2.5 py-2 text-left transition">
+                <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Docs</div>
+                <div id="pmKpiDocs" class="text-base sm:text-lg font-extrabold text-white leading-tight mt-0.5">0</div>
+              </button>
+              <button type="button" onclick="switchPmPortalTab('receipts')"
+                class="rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-700 px-2.5 py-2 text-left transition">
+                <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Spend</div>
+                <div id="pmKpiReceipts" class="text-base sm:text-lg font-extrabold text-emerald-400 leading-tight mt-0.5 truncate">$0.00</div>
+              </button>
+              <button type="button" onclick="switchPmPortalTab('hours')"
+                class="rounded-lg bg-slate-950 border border-slate-800 hover:border-slate-700 px-2.5 py-2 text-left transition">
+                <div class="text-[10px] font-bold uppercase tracking-wider text-slate-400">Hours</div>
+                <div id="pmKpiHours" class="text-base sm:text-lg font-extrabold text-sky-400 leading-tight mt-0.5 truncate">0.0 hrs</div>
+              </button>
+            </div>
+
+            <!-- Non-Wrapping 3-Column Segmented Tab Bar -->
+            <div class="grid grid-cols-3 gap-1 p-1 rounded-lg bg-slate-950 border border-slate-800">
+              <button id="pmTabBtn_docs" type="button" onclick="switchPmPortalTab('docs')"
+                class="h-8 rounded-md text-xs font-bold transition">Docs</button>
+              <button id="pmTabBtn_receipts" type="button" onclick="switchPmPortalTab('receipts')"
+                class="h-8 rounded-md text-xs font-bold transition">Receipts</button>
+              <button id="pmTabBtn_hours" type="button" onclick="switchPmPortalTab('hours')"
+                class="h-8 rounded-md text-xs font-bold transition">Hours</button>
+            </div>
+          </div>
+
+          <!-- Active Tab Content -->
+          <div id="pmPortalTabBody" class="bg-slate-900 border border-slate-800 rounded-xl p-3"></div>
+        </div>
+      `;
+
+      const pmSel = document.getElementById('pmPortalSelectedPm');
+      const jobSel = document.getElementById('pmPortalSelectedJob');
+      if (pmSel) pmSel.dataset.prevVal = prevPm;
+      if (jobSel) jobSel.dataset.prevVal = prevJob;
+
+      if (!window._pmManageOutsideBound) {
+        window._pmManageOutsideBound = true;
+        document.addEventListener('click', (e) => {
+          const wrap = document.getElementById('pmAdminManageWrap');
+          const menu = document.getElementById('pmAdminManageMenu');
+          if (!menu || menu.classList.contains('hidden')) return;
+          if (wrap && wrap.contains(e.target)) return;
+          menu.classList.add('hidden');
+        });
+      }
+    }
+
+    window.togglePmManageMenu = function(e) {
+      if (e) e.stopPropagation();
+      const menu = document.getElementById('pmAdminManageMenu');
+      if (menu) menu.classList.toggle('hidden');
+    };
+
+    window.closePmManageMenu = function() {
+      document.getElementById('pmAdminManageMenu')?.classList.add('hidden');
+    };
 
     async function loadPmPortalData() {
       applyStoredRolesSync();
@@ -289,12 +387,11 @@
         mainFeaturesContainer.appendChild(roleBtn);
       }
 
-      // Inject a clean Role Workspace Switcher Bar at the top of <main> for Project Managers & Supervisors
       const mainEl = document.querySelector('main');
       if (mainEl && !document.getElementById('roleWorkspaceQuickBar')) {
         const bar = document.createElement('div');
         bar.id = 'roleWorkspaceQuickBar';
-        bar.className = 'hidden mb-4 bg-slate-800/95 border border-indigo-500/40 rounded-2xl p-3 flex flex-wrap items-center justify-between gap-2 shadow-lg';
+        bar.className = 'hidden mb-3 bg-slate-900 border border-slate-800 rounded-xl p-2.5 flex flex-wrap items-center justify-between gap-2';
         mainEl.insertBefore(bar, mainEl.firstChild);
       }
     }
@@ -306,34 +403,23 @@
       document.getElementById('viewAdmin')?.classList.add('hidden');
       document.getElementById('viewCrew')?.classList.remove('hidden');
       const emp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
-      document.getElementById('topBarPageTitle').textContent = emp ? `My Card — ${emp.full_name}` : 'My Card & Receipts';
+      document.getElementById('topBarPageTitle').textContent = emp ? `My Card` : 'My Card & Receipts';
       closeSideMenu();
       if (typeof renderCrewView === 'function') renderCrewView();
     };
 
-    // Hide "+ New Job & Assign PM" and "Edit Job PMs / Emails" buttons for non-Admins
     function syncPmHubAdminControls() {
       const isAdmin = getActiveUserEffectiveRole() === 'admin';
-      const pmSection = document.getElementById('viewPmPortal');
-      if (!pmSection) return;
-      pmSection.querySelectorAll('button').forEach(btn => {
-        const oc = btn.getAttribute('onclick') || '';
-        const txt = (btn.textContent || '').trim();
-        if (
-          oc.includes('openNewJobWithPmModal') ||
-          oc.includes('openAssignPmToExistingJobsModal') ||
-          oc.includes('interceptAddJobWithPmPrompt') ||
-          txt.includes('New Job & Assign PM') ||
-          txt.includes('Edit Job PMs')
-        ) {
-          btn.classList.toggle('hidden', !isAdmin);
-          btn.style.display = isAdmin ? '' : 'none';
-        }
-      });
+      const manageWrap = document.getElementById('pmAdminManageWrap');
+      if (manageWrap) {
+        manageWrap.classList.toggle('hidden', !isAdmin);
+      }
+      if (!isAdmin) closePmManageMenu();
     }
 
     function refreshRoleUiVisibility() {
       ensureMenuButtonsExist();
+      ensureCleanPmPortalLayout();
       stripPayrollUiFromPmHub();
       const effRole = getActiveUserEffectiveRole();
       const emp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
@@ -350,7 +436,7 @@
 
       syncPmHubAdminControls();
 
-      // CRITICAL FIX: Ensure the Side Menu's upper scrollable container & FEATURES list are NEVER hidden!
+      // Ensure the Side Menu's upper scrollable container & FEATURES list are never hidden
       const drawer = document.getElementById('sideMenuDrawer');
       if (drawer) {
         Array.from(drawer.children).forEach(child => child.classList.remove('hidden'));
@@ -362,7 +448,6 @@
           }
         }
 
-        // Update Side Drawer Role Subtitle ("Crew Member" -> "Project Manager" / "Supervisor" / "Administrator")
         drawer.querySelectorAll('p, div, span').forEach(el => {
           const txt = (el.textContent || '').trim();
           if (
@@ -387,19 +472,16 @@
         }
       }
 
-      // Update Top-Right Active User Pill (e.g. "PM: Eddie Varner", "Supervisor: Gary Salyers", "Admin: Jake Textor")
       const topUserBadge = document.getElementById('topBarUserName') || document.getElementById('activeUserBadgeText') || document.getElementById('topBarUserLabel');
       if (topUserBadge && emp) {
         topUserBadge.textContent = effRole === 'crew' ? emp.full_name : `${roleInfo.short}: ${emp.full_name}`;
       }
 
-      // Only hide Admin-only sub-containers (#drawerAdminPages, #drawerAdminTools, #btnDrawerResetData) for non-admins
       ['drawerAdminSection', 'drawerOptionsSection', 'drawerResetDataBtn', 'drawerAdminPages', 'drawerAdminTools', 'btnDrawerResetData'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.classList.toggle('hidden', !isAdmin);
       });
 
-      // Show "My Personal Card" shortcut for Appointed Admins who also hold a card
       const myCardBtn = document.getElementById('menuFeatMyPersonalCard');
       if (myCardBtn) {
         if (isAdmin && emp) {
@@ -414,7 +496,6 @@
         }
       }
 
-      // Show/Hide Feature Buttons by Role (Crew Members NEVER see these tabs)
       const pmBtn = document.getElementById('menuFeatPmPortal');
       if (pmBtn) {
         pmBtn.classList.toggle('hidden', !(isAdmin || isPmOrSupv));
@@ -437,7 +518,7 @@
         formsBtn.classList.toggle('hidden', !(isAdmin || isPmOrSupv || allowCrewForms));
       }
 
-      // Render Top Role Quick-Switch Bar for Project Managers & Supervisors
+      // Compact Quick-Switch Bar for PMs & Supervisors
       const quickBar = document.getElementById('roleWorkspaceQuickBar');
       const loginView = document.getElementById('loginScreen') || document.getElementById('viewLogin');
       const isLoggedOut = loginView && !loginView.classList.contains('hidden');
@@ -446,22 +527,22 @@
         if (!isLoggedOut && !isAdmin && isPmOrSupv && emp) {
           const empCards = (state.cards || []).filter(c => (c.assigned_employee_id || c.employee_id) === emp.id);
           const cNum = empCards.length ? (empCards[0].last_four || empCards[0].last4 || '') : '';
-          const cardSuffix = cNum ? ` (•••• ${cNum})` : '';
+          const cardSuffix = cNum ? ` •••• ${cNum}` : '';
           quickBar.classList.remove('hidden');
           quickBar.innerHTML = `
-            <div class="flex items-center gap-2">
-              <span class="px-2.5 py-1 rounded-lg border text-xs font-extrabold ${roleInfo.badgeClass}">${roleInfo.label}</span>
-              <span class="text-xs font-bold text-white">${emp.full_name}</span>
+            <div class="flex items-center gap-2 min-w-0">
+              <span class="px-2 py-0.5 rounded border text-[10px] font-extrabold shrink-0 ${roleInfo.badgeClass}">${roleInfo.short}</span>
+              <span class="text-xs font-bold text-white truncate">${emp.full_name}</span>
             </div>
-            <div class="flex flex-wrap items-center gap-1.5">
-              <button type="button" onclick="selectMenuFeature('pm_portal')" class="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs shadow">
-                📂 PM Project Hub
+            <div class="flex items-center gap-1.5">
+              <button type="button" onclick="selectMenuFeature('pm_portal')" class="h-8 px-2.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-slate-950 font-extrabold text-xs">
+                PM Hub
               </button>
-              <button type="button" onclick="openMyPersonalCardView()" class="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-700 text-emerald-300 border border-emerald-500/40 font-bold text-xs">
-                💳 My Card${cardSuffix}
+              <button type="button" onclick="openMyPersonalCardView()" class="h-8 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 font-bold text-xs">
+                My Card${cardSuffix}
               </button>
-              <button type="button" onclick="selectMenuFeature('forms')" class="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs">
-                📄 Field Forms (PDF)
+              <button type="button" onclick="selectMenuFeature('forms')" class="h-8 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs">
+                Forms
               </button>
             </div>
           `;
@@ -512,7 +593,7 @@
       }
     };
 
-    // 3. Extend selectMenuFeature so PM Hub, Time Cards, and Field Forms work for all permitted roles
+    // 3. Extend selectMenuFeature for PM Hub, Time Cards, and Field Forms
     const _baseSelectMenuFeature = window.selectMenuFeature;
     window.selectMenuFeature = function(featureKey) {
       adminViewingPersonalCard = false;
@@ -526,16 +607,16 @@
         j => (j.pm_name || '').trim().toLowerCase() === (emp.full_name || '').trim().toLowerCase()
       );
 
-      // Route 'pm_portal' and 'timecards' directly into their dedicated PM Project Hub views & tabs
       if (featureKey === 'pm_portal' || featureKey === 'timecards') {
         if (effRole !== 'admin' && effRole !== 'pm' && effRole !== 'supervisor' && !isAssignedPm) {
           closeSideMenu();
           return showSimpleToast('PM Project Hub requires PM, Supervisor, or Admin level', true);
         }
+        ensureCleanPmPortalLayout();
         const hubLabel = effRole === 'supervisor' ? 'Supervisor Job Hub' : 'PM Project Hub';
         const viewMeta = {
-          pm_portal: { top: hubLabel,     eye: 'Project Manager Workspace', h1: `${hubLabel} — Docs, Receipts & Hours`, tab: 'docs' },
-          timecards: { top: 'Time Cards', eye: 'Crew Timekeeping & Hours',  h1: 'Time Cards — Crew Hours Logged',       tab: 'hours' }
+          pm_portal: { top: hubLabel,     eye: 'Project Workspace',      h1: hubLabel,     tab: 'docs' },
+          timecards: { top: 'Time Cards', eye: 'Crew Timekeeping',       h1: 'Time Cards', tab: 'hours' }
         };
         const cfg = viewMeta[featureKey] || viewMeta.pm_portal;
         activePmPortalTab = cfg.tab;
@@ -557,7 +638,7 @@
       }
 
       if (featureKey === 'forms') {
-        document.getElementById('topBarPageTitle').textContent = 'Field Forms (PDF)';
+        document.getElementById('topBarPageTitle').textContent = 'Field Forms';
         document.getElementById('viewCrew')?.classList.add('hidden');
         document.getElementById('viewAdmin')?.classList.add('hidden');
         document.getElementById('viewOtherModule')?.classList.remove('hidden');
@@ -592,43 +673,43 @@
     (function initRolesAndPmModuleImmediately() {
       applyStoredRolesSync();
       ensureMenuButtonsExist();
+      ensureCleanPmPortalLayout();
       stripPayrollUiFromPmHub();
       refreshRoleUiVisibility();
       setTimeout(async () => {
         await loadPmPortalData();
         hookNewJobInputsForPmPrompt();
-        injectRoleButtonIntoPmHeader();
+        ensureCleanPmPortalLayout();
         stripPayrollUiFromPmHub();
         refreshRoleUiVisibility();
       }, 300);
     })();
 
-    function injectRoleButtonIntoPmHeader() {
-      const pmSection = document.getElementById('viewPmPortal');
-      if (!pmSection) return;
-      const isAdmin = getActiveUserEffectiveRole() === 'admin';
-      let btn = document.getElementById('btnOpenRolesModalInHub');
-      if (!btn) {
-        const btnRow = pmSection.querySelector('.flex.flex-wrap.items-center.gap-2');
-        if (btnRow) {
-          btn = document.createElement('button');
-          btn.id = 'btnOpenRolesModalInHub';
-          btn.setAttribute('onclick', 'openUserRolesManagerModal()');
-          btn.className = 'px-3 py-2 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 font-bold text-xs';
-          btn.textContent = '👥 User Levels & Roles';
-          btnRow.appendChild(btn);
-        }
-      }
-      if (btn) {
-        btn.classList.toggle('hidden', !isAdmin);
-        btn.style.display = isAdmin ? '' : 'none';
-      }
-      syncPmHubAdminControls();
-    }
+    // =========================================================================
+    // 4. ADMIN USER LEVELS & ROLES MODAL (SEARCHABLE + PINNED FOOTER + COMPACT)
+    // =========================================================================
+    window.filterUserRolesModalList = function(query) {
+      const q = String(query || '').trim().toLowerCase();
+      const rows = document.querySelectorAll('#rolesModalListContainer [data-role-row]');
+      let visibleCount = 0;
+      rows.forEach(row => {
+        const hay = row.getAttribute('data-search-text') || '';
+        const match = !q || hay.includes(q);
+        row.classList.toggle('hidden', !match);
+        if (match) visibleCount += 1;
+      });
+      const emptyEl = document.getElementById('rolesModalEmptySearch');
+      if (emptyEl) emptyEl.classList.toggle('hidden', visibleCount > 0);
+    };
 
-    // =========================================================================
-    // 4. ADMIN USER LEVELS & ROLES MANAGER MODAL (ADMIN / PM / SUPERVISOR / CREW)
-    // =========================================================================
+    window.onRoleSelectChange = function(empId, newRole) {
+      const emailRow = document.getElementById(`roleEmailWrap_${empId}`);
+      const emailInp = document.getElementById(`roleEmail_${empId}`);
+      if (!emailRow) return;
+      const shouldShow = newRole === 'pm' || newRole === 'admin' || Boolean(emailInp?.value?.trim());
+      emailRow.classList.toggle('hidden', !shouldShow);
+    };
+
     window.openUserRolesManagerModal = function openUserRolesManagerModal() {
       if (typeof closeSideMenu === 'function') closeSideMenu();
       if (getActiveUserEffectiveRole() !== 'admin') {
@@ -636,50 +717,60 @@
       }
       const emps = [...(state.employees || [])].sort((a, b) => (a.full_name || '').localeCompare(b.full_name || ''));
 
-      document.getElementById('modalTitle').textContent = 'Manage User Levels & Roles (Admin / PM / Supervisor / Crew)';
+      document.getElementById('modalTitle').textContent = 'User Levels & Roles';
       document.getElementById('modalBody').innerHTML = `
-        <div class="space-y-3 text-xs">
-          <p class="text-slate-400 leading-relaxed">
-            Appoint users to <strong>Admin</strong>, <strong>Project Manager</strong>, <strong>Supervisor</strong>, or <strong>Crew / User</strong>. Logging in as that user automatically unlocks their role's workspace and menu options.
-          </p>
-
-          <div class="flex flex-wrap gap-1.5 pb-1">
-            <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.admin.badgeClass}">Admin: Full Control + Own Card</span>
-            <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.pm.badgeClass}">Project Manager: PM Hub & Job Docs/Spend</span>
-            <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.supervisor.badgeClass}">Supervisor: Field Lead & Hours</span>
-            <span class="px-2 py-0.5 rounded border text-[10px] font-bold ${USER_ROLE_LABELS.crew.badgeClass}">Crew / User: Card & Forms</span>
+        <div class="flex flex-col max-h-[72dvh] text-xs">
+          <!-- Fixed Search Bar -->
+          <div class="shrink-0 pb-2.5 space-y-2 border-b border-slate-800">
+            <input type="search" id="rolesModalSearchInput" oninput="filterUserRolesModalList(this.value)"
+              placeholder="Search ${emps.length} employees..."
+              class="w-full h-9 px-3 rounded-lg bg-slate-950 border border-slate-700 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-sky-500" />
+            <div class="text-[11px] text-slate-400">
+              Email routing fields appear automatically for <strong>PM</strong> and <strong>Admin</strong> roles.
+            </div>
           </div>
 
-          <div class="space-y-2 max-h-96 overflow-y-auto custom-scroll pr-1">
+          <!-- Scrollable Compact Employee Rows -->
+          <div id="rolesModalListContainer" class="flex-1 min-h-0 overflow-y-auto custom-scroll py-2 space-y-1.5 pr-0.5">
             ${emps.map(e => {
               const role = getEmployeeRole(e);
+              const showEmail = role === 'pm' || role === 'admin' || Boolean((e.email || '').trim());
+              const searchKey = `${(e.full_name || '').toLowerCase()} ${role}`;
               return `
-                <div class="p-2.5 rounded-xl bg-slate-900 border border-slate-700 grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
-                  <div class="sm:col-span-4 font-bold text-white truncate">
-                    ${e.full_name}
-                    ${e.active === false ? `<span class="text-[10px] text-red-400 ml-1">(Inactive)</span>` : ''}
-                  </div>
-                  <div class="sm:col-span-4">
-                    <select id="roleSelect_${e.id}" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-semibold">
-                      <option value="crew" ${role === 'crew' ? 'selected' : ''}>Crew / User</option>
+                <div data-role-row="1" data-search-text="${searchKey.replace(/"/g, '&quot;')}"
+                  class="p-2 rounded-lg bg-slate-950 border border-slate-800 space-y-1.5">
+                  <div class="flex items-center justify-between gap-2">
+                    <div class="font-bold text-white truncate min-w-0 flex-1">
+                      ${e.full_name}
+                      ${e.active === false ? `<span class="text-[10px] text-red-400 ml-1">(Inactive)</span>` : ''}
+                    </div>
+                    <select id="roleSelect_${e.id}" onchange="onRoleSelectChange('${e.id}', this.value)"
+                      class="w-36 shrink-0 h-8 bg-slate-900 border border-slate-700 rounded-md px-2 text-xs text-white font-semibold focus:outline-none focus:border-sky-500">
+                      <option value="crew" ${role === 'crew' ? 'selected' : ''}>Crew</option>
                       <option value="supervisor" ${role === 'supervisor' ? 'selected' : ''}>Supervisor</option>
                       <option value="pm" ${role === 'pm' ? 'selected' : ''}>Project Manager</option>
-                      <option value="admin" ${role === 'admin' ? 'selected' : ''}>Administrator</option>
+                      <option value="admin" ${role === 'admin' ? 'selected' : ''}>Admin</option>
                     </select>
                   </div>
-                  <div class="sm:col-span-4">
-                    <input type="email" id="roleEmail_${e.id}" value="${(e.email || '').replace(/"/g, '&quot;')}" placeholder="Email (for PM routing)" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono text-[11px]" />
+                  <div id="roleEmailWrap_${e.id}" class="${showEmail ? '' : 'hidden'}">
+                    <input type="email" id="roleEmail_${e.id}" value="${(e.email || '').replace(/"/g, '&quot;')}"
+                      placeholder="Email for PDF / PM routing"
+                      class="w-full h-8 bg-slate-900 border border-slate-700 rounded-md px-2.5 text-white font-mono text-[11px] focus:outline-none focus:border-sky-500" />
                   </div>
                 </div>
               `;
             }).join('')}
+            <div id="rolesModalEmptySearch" class="hidden py-6 text-center text-slate-500 text-xs">
+              No matching employees found.
+            </div>
           </div>
 
-          <div class="flex gap-2 pt-2">
-            <button onclick="saveAllUserRoles()" class="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow">
-              💾 Save All User Levels
+          <!-- Pinned Footer (Never Clips) -->
+          <div class="shrink-0 flex gap-2 pt-2.5 border-t border-slate-800">
+            <button onclick="saveAllUserRoles()" class="flex-1 h-10 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow">
+              Save All Levels
             </button>
-            <button onclick="closeModal()" class="px-4 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold border border-slate-700">
+            <button onclick="closeModal()" class="px-4 h-10 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold border border-slate-700">
               Cancel
             </button>
           </div>
@@ -779,40 +870,40 @@
         `</optgroup>` +
         (otherEmps.length ? `<optgroup label="Other Roster Users">` + otherEmps.map(e => `<option value="${e.full_name.replace(/"/g, '&quot;')}">${e.full_name}</option>`).join('') + `</optgroup>` : '');
 
-      document.getElementById('modalTitle').textContent = 'Add Job & Assign Project Manager';
+      document.getElementById('modalTitle').textContent = 'Add Job & Assign PM';
       document.getElementById('modalBody').innerHTML = `
-        <div class="space-y-3.5 text-xs">
+        <div class="space-y-3 text-xs">
           <div>
             <label class="block font-bold text-slate-300 mb-1">Job Description / Name <span class="text-emerald-400">*</span></label>
-            <input type="text" id="modalNewJobName" value="${prefilledJobName.replace(/"/g, '&quot;')}" placeholder="e.g. Bingham Elementary" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-white font-semibold" />
+            <input type="text" id="modalNewJobName" value="${prefilledJobName.replace(/"/g, '&quot;')}" placeholder="e.g. Bingham Elementary" class="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-white font-semibold" />
           </div>
 
-          <div class="p-3 rounded-xl bg-slate-900/90 border border-indigo-500/40 space-y-3">
+          <div class="p-3 rounded-lg bg-slate-950 border border-slate-800 space-y-2.5">
             <div class="flex items-center justify-between">
-              <span class="text-[11px] font-bold uppercase tracking-wider text-indigo-400">Designated Project Manager (Required)</span>
-              <button type="button" onclick="openUserRolesManagerModal()" class="text-[11px] text-amber-300 underline">Manage PM Roles</button>
+              <span class="text-[11px] font-bold uppercase tracking-wider text-sky-400">Project Manager (Required)</span>
+              <button type="button" onclick="openUserRolesManagerModal()" class="text-[11px] text-slate-300 underline">Manage Roles</button>
             </div>
             <div>
               <label class="block text-slate-400 mb-1">Select Project Manager</label>
-              <select onchange="autoFillModalPmEmail(this.value)" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white">
+              <select onchange="autoFillModalPmEmail(this.value)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white">
                 ${empOptions}
               </select>
             </div>
             <div>
-              <label class="block font-bold text-slate-300 mb-1">Project Manager Name <span class="text-emerald-400">*</span></label>
-              <input type="text" id="modalNewJobPmName" placeholder="e.g. Eddie Varner" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-semibold" />
+              <label class="block font-bold text-slate-300 mb-1">PM Name <span class="text-emerald-400">*</span></label>
+              <input type="text" id="modalNewJobPmName" placeholder="e.g. Eddie Varner" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white font-semibold" />
             </div>
             <div>
-              <label class="block font-bold text-slate-300 mb-1">Project Manager Email (Default for PDF Forms) <span class="text-emerald-400">*</span></label>
-              <input type="email" id="modalNewJobPmEmail" placeholder="eddie@advconcrete.com" class="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono" />
+              <label class="block font-bold text-slate-300 mb-1">PM Email (Default for PDF Forms) <span class="text-emerald-400">*</span></label>
+              <input type="email" id="modalNewJobPmEmail" placeholder="eddie@advconcrete.com" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono" />
             </div>
           </div>
 
-          <div class="flex gap-2 pt-2">
-            <button onclick="saveNewJobWithPm()" class="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow">
+          <div class="flex gap-2 pt-1">
+            <button onclick="saveNewJobWithPm()" class="flex-1 h-10 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow">
               Save Job & Assign PM
             </button>
-            <button onclick="closeModal()" class="px-4 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold border border-slate-700">
+            <button onclick="closeModal()" class="px-4 h-10 rounded-lg bg-slate-800 text-slate-300 font-bold border border-slate-700">
               Cancel
             </button>
           </div>
@@ -889,36 +980,40 @@
       const pmCandidates = getAppointedPmList();
       const empDatalist = `<datalist id="pmRosterList">${pmCandidates.map(e => `<option value="${e.full_name}">`).join('')}</datalist>`;
 
-      document.getElementById('modalTitle').textContent = 'Assign Project Managers & Default Form Emails';
+      document.getElementById('modalTitle').textContent = 'Edit Job PMs & Emails';
       document.getElementById('modalBody').innerHTML = `
-        <div class="space-y-3 text-xs">
+        <div class="flex flex-col max-h-[72dvh] text-xs">
           ${empDatalist}
-          ${onlyUnassignedNotice ? `
-            <div class="p-3 rounded-xl bg-amber-950/80 border border-amber-500/60 text-amber-200">
-              <strong>New / Unassigned Jobs Detected:</strong> Please assign a Project Manager and Email below so completed PDF forms and job spend route automatically.
-            </div>
-          ` : `
-            <p class="text-slate-400">Assign a Project Manager and Email to each job. When that job is selected on any receipt or PDF form, its spend and documents link directly to that Project Manager.</p>
-          `}
-          <div class="space-y-2.5 max-h-96 overflow-y-auto custom-scroll pr-1">
+          <div class="shrink-0 pb-2.5 border-b border-slate-800">
+            ${onlyUnassignedNotice ? `
+              <div class="p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/50 text-amber-200">
+                <strong>Unassigned Jobs:</strong> Assign a PM and Email below so PDF forms and job spend route automatically.
+              </div>
+            ` : `
+              <p class="text-slate-400">Assign a Project Manager and Email to each job for automatic PDF routing and spend tracking.</p>
+            `}
+          </div>
+
+          <div class="flex-1 min-h-0 overflow-y-auto custom-scroll py-2 space-y-2 pr-0.5">
             ${jobs.map(j => `
-              <div class="p-3 rounded-xl bg-slate-900 border ${(!j.pm_name || !j.pm_email) ? 'border-amber-500/60' : 'border-slate-700'} space-y-2">
-                <div class="font-bold text-white flex items-center justify-between">
-                  <span>${j.name}</span>
-                  ${(!j.pm_name || !j.pm_email) ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300">Needs PM</span>` : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">✓ Assigned</span>`}
+              <div class="p-2.5 rounded-lg bg-slate-950 border ${(!j.pm_name || !j.pm_email) ? 'border-amber-500/60' : 'border-slate-800'} space-y-2">
+                <div class="font-bold text-white flex items-center justify-between gap-2">
+                  <span class="truncate">${j.name}</span>
+                  ${(!j.pm_name || !j.pm_email) ? `<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 shrink-0">Needs PM</span>` : `<span class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300 shrink-0">✓ Assigned</span>`}
                 </div>
-                <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <input type="text" list="pmRosterList" id="editJobPmName_${j.id}" value="${(j.pm_name || '').replace(/"/g, '&quot;')}" placeholder="PM Full Name" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-semibold" />
-                  <input type="email" id="editJobPmEmail_${j.id}" value="${(j.pm_email || '').replace(/"/g, '&quot;')}" placeholder="PM Email Address" class="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1.5 text-white font-mono" />
+                <div class="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                  <input type="text" list="pmRosterList" id="editJobPmName_${j.id}" value="${(j.pm_name || '').replace(/"/g, '&quot;')}" placeholder="PM Full Name" class="h-8 bg-slate-900 border border-slate-700 rounded-md px-2.5 text-white font-semibold" />
+                  <input type="email" id="editJobPmEmail_${j.id}" value="${(j.pm_email || '').replace(/"/g, '&quot;')}" placeholder="PM Email Address" class="h-8 bg-slate-900 border border-slate-700 rounded-md px-2.5 text-white font-mono text-[11px]" />
                 </div>
               </div>
             `).join('')}
           </div>
-          <div class="flex gap-2 pt-2">
-            <button onclick="saveAllJobPmAssignments()" class="flex-1 py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow">
-              Save All PM Assignments
+
+          <div class="shrink-0 flex gap-2 pt-2.5 border-t border-slate-800">
+            <button onclick="saveAllJobPmAssignments()" class="flex-1 h-10 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold shadow">
+              Save Assignments
             </button>
-            <button onclick="closeModal()" class="px-4 py-3 rounded-xl bg-slate-800 text-slate-300 font-bold border border-slate-700">
+            <button onclick="closeModal()" class="px-4 h-10 rounded-lg bg-slate-800 text-slate-300 font-bold border border-slate-700">
               Close
             </button>
           </div>
@@ -1026,10 +1121,10 @@
     // 7. PROJECT MANAGER PORTAL: DOCS, RECEIPTS/INVOICES & HOURS
     // =========================================================================
     window.initPmPortalView = async function initPmPortalView() {
+      ensureCleanPmPortalLayout();
       stripPayrollUiFromPmHub();
       await loadPmPortalData();
       await loadFormTemplatesFromSupabase();
-      injectRoleButtonIntoPmHeader();
 
       const pmSelect = document.getElementById('pmPortalSelectedPm');
       if (!pmSelect) return;
@@ -1037,11 +1132,6 @@
       const effRole = getActiveUserEffectiveRole();
       const loggedInEmp = (state.employees || []).find(e => e.id === activeCrewEmployeeId);
 
-      const roleHubBtn = document.getElementById('btnOpenRolesModalInHub');
-      if (roleHubBtn) {
-        roleHubBtn.classList.toggle('hidden', effRole !== 'admin');
-        roleHubBtn.style.display = effRole === 'admin' ? '' : 'none';
-      }
       syncPmHubAdminControls();
 
       const pmNamesSet = new Set();
@@ -1055,14 +1145,14 @@
 
       if (effRole === 'pm' && loggedInEmp) {
         const myName = loggedInEmp.full_name.trim();
-        pmSelect.innerHTML = `<option value="${myName.replace(/"/g, '&quot;')}">${myName} (My Assigned Projects)</option>`;
+        pmSelect.innerHTML = `<option value="${myName.replace(/"/g, '&quot;')}">${myName}</option>`;
         pmSelect.value = myName;
         pmSelect.disabled = true;
       } else {
         pmSelect.disabled = false;
-        const previousVal = pmSelect.value;
+        const previousVal = pmSelect.value || pmSelect.dataset.prevVal || 'ALL';
         pmSelect.innerHTML =
-          `<option value="ALL">All Project Managers (${(state.jobs || []).length} Jobs)</option>` +
+          `<option value="ALL">All PMs (${(state.jobs || []).length})</option>` +
           pmNames.map(name => `<option value="${name.replace(/"/g, '&quot;')}">${name}</option>`).join('');
         if (previousVal && (previousVal === 'ALL' || pmNames.includes(previousVal))) {
           pmSelect.value = previousVal;
@@ -1079,14 +1169,21 @@
       const jobSelect = document.getElementById('pmPortalSelectedJob');
       if (!jobSelect) return;
 
+      const prevJob = jobSelect.value || jobSelect.dataset.prevVal || 'ALL';
       const matchingJobs = (state.jobs || []).filter(j => {
         if (selectedPm === 'ALL') return true;
         return (j.pm_name || '').trim().toLowerCase() === selectedPm.trim().toLowerCase();
       });
 
       jobSelect.innerHTML =
-        `<option value="ALL">All Assigned Jobs (${matchingJobs.length})</option>` +
-        matchingJobs.map(j => `<option value="${j.name.replace(/"/g, '&quot;')}">${j.name} ${j.pm_name ? `(${j.pm_name})` : ''}</option>`).join('');
+        `<option value="ALL">All Jobs (${matchingJobs.length})</option>` +
+        matchingJobs.map(j => `<option value="${j.name.replace(/"/g, '&quot;')}">${j.name}</option>`).join('');
+
+      if (prevJob && (prevJob === 'ALL' || matchingJobs.some(j => j.name === prevJob))) {
+        jobSelect.value = prevJob;
+      } else {
+        jobSelect.value = 'ALL';
+      }
 
       switchPmPortalTab(activePmPortalTab || 'docs');
     }
@@ -1098,14 +1195,15 @@
         const btn = document.getElementById(`pmTabBtn_${k}`);
         if (btn) {
           btn.className = k === validTab
-            ? 'px-3.5 py-2 rounded-xl text-xs font-bold bg-indigo-600 text-white shadow'
-            : 'px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-900 text-slate-300 hover:text-white';
+            ? 'h-8 rounded-md text-xs font-extrabold bg-sky-500 text-slate-950 shadow-sm transition'
+            : 'h-8 rounded-md text-xs font-bold text-slate-300 hover:text-white transition';
         }
       });
       renderPmPortalContent();
     }
 
     function renderPmPortalContent() {
+      ensureCleanPmPortalLayout();
       stripPayrollUiFromPmHub();
       const selectedPm = document.getElementById('pmPortalSelectedPm')?.value || 'ALL';
       const selectedJob = document.getElementById('pmPortalSelectedJob')?.value || 'ALL';
@@ -1167,31 +1265,29 @@
 
       if (activePmPortalTab === 'docs') {
         body.innerHTML = `
-          <div class="space-y-3">
-            <div class="flex items-center justify-between">
-              <h2 class="text-xs font-bold uppercase tracking-wider text-indigo-400">Completed Project PDFs (${docs.length})</h2>
-              <button onclick="selectMenuFeature('forms')" class="px-3 py-1.5 rounded-xl bg-emerald-600 text-white font-bold text-xs">+ Fill New PDF Form</button>
+          <div class="space-y-2.5">
+            <div class="flex items-center justify-between gap-2 pb-2 border-b border-slate-800">
+              <h2 class="text-xs font-bold uppercase tracking-wider text-slate-300">Project PDFs (${docs.length})</h2>
+              <button onclick="selectMenuFeature('forms')" class="h-8 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs">+ New Form</button>
             </div>
-            <div class="space-y-2">
+            <div class="divide-y divide-slate-800">
               ${docs.map(d => {
                 const jInfo = resolveRecordJobInfo(d);
                 return `
-                  <div class="p-3 rounded-xl bg-slate-900 border border-slate-700 flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div>
-                      <div class="font-bold text-white">${d.template_title || 'Completed PDF'}</div>
+                  <div class="py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div class="min-w-0 flex-1">
+                      <div class="font-bold text-white truncate">${d.template_title || 'Completed PDF'}</div>
                       <div class="text-[11px] text-slate-400">
-                        Job: <span class="text-emerald-300 font-semibold">${jInfo.jobName || d.job_name || 'Assigned'}</span> •
-                        By: ${d.submitted_by || 'Crew'} •
+                        <span class="text-emerald-300 font-semibold">${jInfo.jobName || d.job_name || 'Assigned'}</span> •
+                        ${d.submitted_by || 'Crew'} •
                         ${d.created_at ? new Date(d.created_at).toLocaleDateString() : ''}
-                        ${d.recipient_email ? ` • Sent to: ${d.recipient_email}` : ''}
+                        ${d.recipient_email ? ` • ${d.recipient_email}` : ''}
                       </div>
                     </div>
-                    <div class="flex items-center gap-2">
-                      ${d.filled_pdf_url ? `<a href="${d.filled_pdf_url}" target="_blank" rel="noopener" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs">View Signed PDF</a>` : ''}
-                    </div>
+                    ${d.filled_pdf_url ? `<a href="${d.filled_pdf_url}" target="_blank" rel="noopener" class="h-8 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-sky-300 font-bold text-xs inline-flex items-center shrink-0">View PDF</a>` : ''}
                   </div>
                 `;
-              }).join('') || `<p class="text-xs text-slate-500 py-4">No completed PDF documents found for the selected PM / Job filter.</p>`}
+              }).join('') || `<p class="text-xs text-slate-500 py-6 text-center">No completed PDF documents for this filter.</p>`}
             </div>
           </div>
         `;
@@ -1200,36 +1296,36 @@
 
       if (activePmPortalTab === 'receipts') {
         body.innerHTML = `
-          <div class="space-y-3">
-            <div class="flex items-center justify-between">
-              <h2 class="text-xs font-bold uppercase tracking-wider text-emerald-400">Job Invoices, Receipts & Card Charges (${receipts.length})</h2>
-              <span class="text-xs font-mono font-bold text-emerald-300">Job Spend Total: $${totalReceiptSpend.toFixed(2)}</span>
+          <div class="space-y-2.5">
+            <div class="flex items-center justify-between gap-2 pb-2 border-b border-slate-800">
+              <h2 class="text-xs font-bold uppercase tracking-wider text-slate-300">Receipts & Charges (${receipts.length})</h2>
+              <span class="text-xs font-mono font-bold text-emerald-400">$${totalReceiptSpend.toFixed(2)}</span>
             </div>
-            <div class="space-y-2">
+            <div class="divide-y divide-slate-800">
               ${receipts.map(r => {
                 const amt = r.amount !== null && r.amount !== undefined && r.amount !== '' ? Number(r.amount) : Number(r.ocr_amount || 0);
                 const jInfo = resolveRecordJobInfo(r);
                 const ccObj = (state.costCodes || []).find(c => String(c.id) === String(r.cost_code_id));
                 const ccLabel = (ccObj ? ccObj.name : '') || r.cost_code || r.costCode || r.assigned_cost_code || 'Unassigned';
-                const vendorLabel = r.ocr_vendor || r.vendor || r.merchant || r.ocr_merchant || 'Vendor Receipt / Invoice';
+                const vendorLabel = r.ocr_vendor || r.vendor || r.merchant || r.ocr_merchant || 'Vendor Receipt';
                 const card4 = r.ocr_last_four || r.last_four || r.card_last4 || '----';
                 const dateLabel = r.ocr_post_date || r.post_date || r.ocr_date || '';
-                const jobObj = (state.jobs || []).find(j => (j.name || '').toLowerCase() === (jInfo.jobName || '').toLowerCase());
-                const pmTag = jobObj && jobObj.pm_name ? ` • PM: ${jobObj.pm_name}` : '';
                 return `
-                  <div class="p-3 rounded-xl bg-slate-900 border border-slate-700 flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div>
-                      <div class="font-bold text-white">${vendorLabel} — <span class="text-emerald-400 font-mono">$${(isNaN(amt) ? 0 : amt).toFixed(2)}</span></div>
-                      <div class="text-[11px] text-slate-400">
-                        Job: <span class="text-indigo-300 font-semibold">${jInfo.jobName || '--'}</span> •
-                        Cost Code: <span class="text-amber-300 font-mono">${ccLabel}</span> •
-                        Card •••• ${card4} • ${dateLabel}${pmTag}
+                  <div class="py-2.5 flex items-center justify-between gap-2 text-xs">
+                    <div class="min-w-0 flex-1">
+                      <div class="flex items-center justify-between gap-2">
+                        <span class="font-bold text-white truncate">${vendorLabel}</span>
+                        <span class="text-emerald-400 font-mono font-bold shrink-0">$${(isNaN(amt) ? 0 : amt).toFixed(2)}</span>
+                      </div>
+                      <div class="text-[11px] text-slate-400 truncate mt-0.5">
+                        <span class="text-sky-300 font-semibold">${jInfo.jobName || '--'}</span> •
+                        <span class="font-mono">${ccLabel}</span> • •••• ${card4}${dateLabel ? ` • ${dateLabel}` : ''}
                       </div>
                     </div>
-                    ${r.receipt_image ? `<button onclick="viewReceiptModal('${r.id}')" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-emerald-300 border border-emerald-500/40 font-bold text-xs">View Receipt / Invoice</button>` : `<span class="text-[11px] text-amber-400">No Photo Attached</span>`}
+                    ${r.receipt_image ? `<button onclick="viewReceiptModal('${r.id}')" class="h-8 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-700 font-bold text-xs shrink-0">View</button>` : `<span class="text-[10px] text-slate-500 shrink-0">No img</span>`}
                   </div>
                 `;
-              }).join('') || `<p class="text-xs text-slate-500 py-4">No receipts or invoices linked to the selected PM / Job filter yet.</p>`}
+              }).join('') || `<p class="text-xs text-slate-500 py-6 text-center">No receipts linked to this filter yet.</p>`}
             </div>
           </div>
         `;
@@ -1238,30 +1334,32 @@
 
       if (activePmPortalTab === 'hours') {
         body.innerHTML = `
-          <div class="space-y-3">
-            <div class="flex flex-wrap items-center justify-between gap-2">
-              <h2 class="text-xs font-bold uppercase tracking-wider text-indigo-400">Crew Hours Logged (${totalHours.toFixed(1)} hrs)</h2>
-              <button onclick="openLogJobHoursModal()" class="px-3 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs">+ Log Crew Hours</button>
+          <div class="space-y-2.5">
+            <div class="flex items-center justify-between gap-2 pb-2 border-b border-slate-800">
+              <h2 class="text-xs font-bold uppercase tracking-wider text-slate-300">Crew Hours (${totalHours.toFixed(1)} hrs)</h2>
+              <button onclick="openLogJobHoursModal()" class="h-8 px-3 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs">+ Log Hours</button>
             </div>
-            <div class="space-y-2">
+            <div class="divide-y divide-slate-800">
               ${hoursList.map(t => `
-                <div class="p-3 rounded-xl bg-slate-900 border border-slate-700 flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div>
-                    <div class="font-bold text-white">${t.employee_name} — <span class="text-indigo-400 font-mono">${Number(t.hours).toFixed(2)} hrs</span></div>
-                    <div class="text-[11px] text-slate-400">
-                      Job: <span class="text-emerald-300 font-semibold">${t.job_name}</span> •
-                      Cost Code: <span class="font-mono text-amber-300">${t.cost_code || 'General'}</span> •
-                      Date: ${t.work_date || ''} ${t.notes ? `• "${t.notes}"` : ''}
+                <div class="py-2.5 flex items-center justify-between gap-2 text-xs">
+                  <div class="min-w-0 flex-1">
+                    <div class="font-bold text-white truncate">
+                      ${t.employee_name} <span class="text-sky-400 font-mono ml-1">${Number(t.hours).toFixed(2)} hrs</span>
+                    </div>
+                    <div class="text-[11px] text-slate-400 truncate mt-0.5">
+                      <span class="text-emerald-300 font-semibold">${t.job_name}</span> •
+                      <span class="font-mono">${t.cost_code || 'General'}</span> •
+                      ${t.work_date || ''}${t.notes ? ` • "${t.notes}"` : ''}
                     </div>
                   </div>
-                  <div class="flex items-center gap-2">
-                    <button onclick="toggleApproveTimeEntry('${t.id}')" class="px-2.5 py-1 rounded-lg font-bold text-[11px] ${t.approved_by_pm ? 'bg-emerald-600/30 text-emerald-200 border border-emerald-500/40' : 'bg-slate-800 text-slate-300 border border-slate-700'}">
-                      ${t.approved_by_pm ? '✓ PM Approved' : 'Approve'}
+                  <div class="flex items-center gap-1.5 shrink-0">
+                    <button onclick="toggleApproveTimeEntry('${t.id}')" class="h-8 px-2.5 rounded-lg font-bold text-[11px] border ${t.approved_by_pm ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40' : 'bg-slate-800 text-slate-300 border-slate-700'}">
+                      ${t.approved_by_pm ? '✓ Approved' : 'Approve'}
                     </button>
-                    <button onclick="deleteTimeEntry('${t.id}')" class="px-2 py-1 rounded-lg bg-red-950/60 text-red-300 font-bold text-[11px]">✕</button>
+                    <button onclick="deleteTimeEntry('${t.id}')" title="Delete entry" class="w-8 h-8 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/30 text-rose-300 font-bold text-xs flex items-center justify-center">✕</button>
                   </div>
                 </div>
-              `).join('') || `<p class="text-xs text-slate-500 py-4">No hours logged for this project filter yet. Click "+ Log Crew Hours" to record job hours.</p>`}
+              `).join('') || `<p class="text-xs text-slate-500 py-6 text-center">No hours logged for this filter yet.</p>`}
             </div>
           </div>
         `;
@@ -1280,35 +1378,35 @@
         <div class="space-y-3 text-xs">
           <div>
             <label class="block font-bold text-slate-300 mb-1">Job Name</label>
-            <select id="logHrJob" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white">${jobOpts}</select>
+            <select id="logHrJob" class="w-full h-9 bg-slate-950 border border-slate-700 rounded-lg px-3 text-white">${jobOpts}</select>
           </div>
           <div class="grid grid-cols-2 gap-2">
             <div>
               <label class="block font-bold text-slate-300 mb-1">Employee</label>
-              <select id="logHrEmp" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white">${empOpts}</select>
+              <select id="logHrEmp" class="w-full h-9 bg-slate-950 border border-slate-700 rounded-lg px-2.5 text-white">${empOpts}</select>
             </div>
             <div>
               <label class="block font-bold text-slate-300 mb-1">Work Date</label>
-              <input type="date" id="logHrDate" value="${today}" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white" />
+              <input type="date" id="logHrDate" value="${today}" class="w-full h-9 bg-slate-950 border border-slate-700 rounded-lg px-2.5 text-white" />
             </div>
           </div>
           <div class="grid grid-cols-2 gap-2">
             <div>
               <label class="block font-bold text-slate-300 mb-1">Hours</label>
-              <input type="number" step="0.25" id="logHrHours" placeholder="8.0" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono" />
+              <input type="number" step="0.25" id="logHrHours" placeholder="8.0" class="w-full h-9 bg-slate-950 border border-slate-700 rounded-lg px-3 text-white font-mono" />
             </div>
             <div>
               <label class="block font-bold text-slate-300 mb-1">Cost Code</label>
-              <select id="logHrCc" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-2 py-2 text-white">${ccOpts}</select>
+              <select id="logHrCc" class="w-full h-9 bg-slate-950 border border-slate-700 rounded-lg px-2 text-white">${ccOpts}</select>
             </div>
           </div>
           <div>
             <label class="block font-bold text-slate-300 mb-1">Work Notes (Optional)</label>
-            <input type="text" id="logHrNotes" placeholder="e.g. Footing pour & finish" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-white" />
+            <input type="text" id="logHrNotes" placeholder="e.g. Footing pour & finish" class="w-full h-9 bg-slate-950 border border-slate-700 rounded-lg px-3 text-white" />
           </div>
-          <div class="flex gap-2 pt-2">
-            <button onclick="saveLoggedJobHours()" class="flex-1 py-2.5 rounded-xl bg-emerald-600 text-white font-bold">Save Hours</button>
-            <button onclick="closeModal()" class="px-4 py-2.5 rounded-xl bg-slate-800 text-slate-300 font-bold">Cancel</button>
+          <div class="flex gap-2 pt-1">
+            <button onclick="saveLoggedJobHours()" class="flex-1 h-10 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold">Save Hours</button>
+            <button onclick="closeModal()" class="px-4 h-10 rounded-lg bg-slate-800 text-slate-300 font-bold border border-slate-700">Cancel</button>
           </div>
         </div>
       `;
