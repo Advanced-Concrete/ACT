@@ -1,13 +1,14 @@
 // =========================================================================
 // ACT MASTER - BLUEPRINT REFERENCE MEASUREMENTS (blueprint-measure.js)
-// Drop-in Distance & Surface Area measurement overlay for blueprints.js
+// Drop-in Distance & Surface Area measurement overlay + Landscape/Fullscreen UX
 // - Role guards:
 //     Supervisor / PM / Admin: Calibrate & Recalibrate sheets (shared in Supabase)
 //     Crew:                    Measure Distance & Area on calibrated sheets (read-only scale)
 // - Top "Measured Totals" dropdown: select any measurement to highlight its lines
 //   and individual segment lengths on screen
 // - Per-user saved measurements synced across devices via `blueprint_user_measurements`
-// - Desktop: Precision crosshair cursor while Measure Mode is active
+// - Phone Landscape: Auto-compacts Measure Dock into a single ~42px horizontal strip
+// - Collapsible Measure Dock (▾) + One-tap Fullscreen (⛶ Full) for field drawings
 // =========================================================================
 (function initBlueprintMeasure() {
   'use strict';
@@ -43,6 +44,8 @@
     active: false,
     tool: 'distance', // 'distance' | 'area' | 'calibrate'
     orthoSnap: false,
+    dockCollapsed: false,
+    fullscreen: false,
     pageScale: null, // { scale_label, calibration_mode, width_ft, height_ft, calibrated_by, updated_at }
     scaleCache: loadLocalJSON(LOCAL_SCALE_CACHE_KEY, {}),
     savedCache: loadLocalJSON(LOCAL_MEASURES_CACHE_KEY, {}),
@@ -479,7 +482,6 @@
       mState.totalsDropdownOpen = false;
     }
 
-    // Hydrate from local per-user cache immediately for instant / offline display
     const cachedRows = mState.savedCache[userPageKey];
     if (Array.isArray(cachedRows) && cachedRows.length > 0) {
       mergeSavedShapesIntoState(cachedRows.map(sanitizeShapeRow));
@@ -611,12 +613,79 @@
   }
 
   // =========================================================================
-  // 4. DOM INJECTION & STYLING
+  // 4. FULLSCREEN FOCUS MODE (HIDES TOP CHROME FOR LANDSCAPE FIELD VIEWING)
+  // =========================================================================
+  function tagBlueprintTopChrome() {
+    const view = document.getElementById('viewBlueprints');
+    const viewport = document.getElementById('bpCanvasViewport');
+    if (!view || !viewport) return;
+
+    let el = viewport;
+    while (el && el !== view) {
+      let prev = el.previousElementSibling;
+      while (prev) {
+        prev.classList.add('bp-fs-chrome');
+        prev = prev.previousElementSibling;
+      }
+      el = el.parentElement;
+    }
+  }
+
+  function setFullscreen(enabled) {
+    const next = Boolean(enabled);
+    if (next) tagBlueprintTopChrome();
+    mState.fullscreen = next;
+    document.body.classList.toggle('bp-focus-fullscreen', next);
+    renderFullscreenControls();
+    setTimeout(() => window.dispatchEvent(new Event('resize')), 40);
+  }
+
+  function renderFullscreenControls() {
+    const fsToolbarBtn = document.getElementById('bpToggleFullscreenBtn');
+    if (fsToolbarBtn) {
+      fsToolbarBtn.className = mState.fullscreen
+        ? 'px-2.5 py-1.5 rounded-lg text-xs font-extrabold bg-sky-500 text-slate-950 border border-sky-400 flex items-center gap-1 transition shrink-0'
+        : 'px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center gap-1 transition shrink-0';
+    }
+
+    const floatBar = document.getElementById('bpFullscreenFloatBar');
+    if (!floatBar) return;
+
+    if (!mState.fullscreen) {
+      floatBar.classList.add('hidden');
+      return;
+    }
+
+    floatBar.classList.remove('hidden');
+    floatBar.innerHTML = `
+      <button id="bpFsQuickMeasureBtn" type="button" title="Toggle Measure Mode"
+        class="h-8 px-2.5 rounded-lg text-xs font-extrabold border shadow-lg flex items-center gap-1 transition ${
+          mState.active
+            ? 'bg-emerald-500 text-slate-950 border-emerald-400'
+            : 'bg-slate-900/95 hover:bg-slate-800 text-slate-100 border-slate-700'
+        }">
+        <span>📐</span><span>Measure</span>
+      </button>
+      <button id="bpFsExitBtn" type="button" title="Exit Fullscreen"
+        class="h-8 px-2.5 rounded-lg bg-slate-900/95 hover:bg-slate-800 border border-slate-700 text-xs font-bold text-slate-100 shadow-lg flex items-center gap-1">
+        <span>⤡</span><span>Exit</span>
+      </button>
+    `;
+
+    document.getElementById('bpFsQuickMeasureBtn').onclick = () => setMeasureActive(!mState.active);
+    document.getElementById('bpFsExitBtn').onclick = () => setFullscreen(false);
+  }
+
+  // =========================================================================
+  // 5. DOM INJECTION & RESPONSIVE LANDSCAPE STYLING
   // =========================================================================
   function injectStyles() {
-    if (document.getElementById('bpMeasureStyles')) return;
-    const style = document.createElement('style');
-    style.id = 'bpMeasureStyles';
+    let style = document.getElementById('bpMeasureStyles');
+    if (!style) {
+      style = document.createElement('style');
+      style.id = 'bpMeasureStyles';
+      document.head.appendChild(style);
+    }
     style.textContent = `
       #viewBlueprints.bp-measure-active #bpCalloutOverlayLayer {
         pointer-events: none !important;
@@ -719,36 +788,176 @@
         font-size: 12px;
         box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.45), 0 3px 10px rgba(0, 0, 0, 0.75);
       }
+
+      /* Fullscreen Focus Mode */
+      body.bp-focus-fullscreen > header {
+        display: none !important;
+      }
+      body.bp-focus-fullscreen #viewBlueprints {
+        top: 0 !important;
+        height: 100dvh !important;
+        max-height: 100dvh !important;
+      }
+      body.bp-focus-fullscreen .bp-fs-chrome {
+        display: none !important;
+      }
+
+      /* Collapsed Measure Dock Pill (Portrait & Landscape) */
+      #bpMeasureDock.is-collapsed {
+        left: auto !important;
+        right: 10px !important;
+        bottom: 10px !important;
+        transform: none !important;
+        width: auto !important;
+        max-width: calc(100% - 20px) !important;
+        padding: 6px 10px !important;
+        border-radius: 14px !important;
+      }
+
+      /* Phone Landscape Single-Row Measure Bar (max-height: 540px leaves tablets/desktops untouched) */
+      @media (orientation: landscape) and (max-height: 540px) {
+        #bpMeasureDock:not(.is-collapsed) {
+          left: 8px !important;
+          right: 8px !important;
+          bottom: 6px !important;
+          transform: none !important;
+          width: auto !important;
+          max-width: none !important;
+          padding: 5px 8px !important;
+          border-radius: 12px !important;
+          display: flex !important;
+          flex-direction: row !important;
+          align-items: center !important;
+          gap: 6px !important;
+          overflow-x: auto !important;
+          scrollbar-width: none;
+        }
+        #bpMeasureDock:not(.is-collapsed)::-webkit-scrollbar {
+          display: none;
+        }
+        #bpMeasureDock:not(.is-collapsed) > * {
+          margin-top: 0 !important;
+        }
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-header,
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-tools {
+          display: contents !important;
+        }
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-scale-info,
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-note,
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-eyebrow,
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-tool-lbl,
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-clear-extra,
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-land-full {
+          display: none !important;
+        }
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-land-short {
+          display: inline !important;
+        }
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-tools-left {
+          order: 1;
+          flex-shrink: 0;
+          gap: 4px !important;
+        }
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-readout {
+          order: 2;
+          flex: 1 1 auto;
+          min-width: 140px;
+          padding: 4px 8px !important;
+          border-radius: 8px !important;
+        }
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-readout-val {
+          font-size: 13px !important;
+          line-height: 1.2 !important;
+          white-space: nowrap;
+        }
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-tools-right {
+          order: 3;
+          flex-shrink: 0;
+          gap: 4px !important;
+        }
+        #bpMeasureDock:not(.is-collapsed) .bp-mdock-header-actions {
+          order: 4;
+          flex-shrink: 0;
+          gap: 4px !important;
+        }
+        #bpMeasureDock:not(.is-collapsed) button {
+          padding-top: 5px !important;
+          padding-bottom: 5px !important;
+          padding-left: 8px !important;
+          padding-right: 8px !important;
+          border-radius: 8px !important;
+          font-size: 11px !important;
+        }
+        #bpMeasureTotalsWrap {
+          top: 6px !important;
+          left: 8px !important;
+          transform: none !important;
+          width: auto !important;
+          max-width: min(360px, calc(100% - 175px)) !important;
+          align-items: flex-start !important;
+        }
+        #bpMeasureTotalsWrap #bpTotalsToggleBtn {
+          padding: 5px 10px !important;
+          font-size: 11px !important;
+          border-radius: 8px !important;
+        }
+        #bpMeasureTotalsWrap .bp-totals-scroll {
+          max-height: 46dvh !important;
+        }
+        #bpMeasureTopBanner {
+          top: 6px !important;
+          padding: 5px 10px !important;
+          font-size: 11px !important;
+        }
+      }
     `;
-    document.head.appendChild(style);
   }
 
-  function ensureToolbarButton() {
-    if (document.getElementById('bpToggleMeasureBtn')) return;
-
+  function ensureToolbarButtons() {
     const anchor =
       document.getElementById('bpToggleAddLinkBtn') ||
       document.getElementById('bpSaveOfflineBtn') ||
       document.getElementById('bpZoomFitBtn');
     if (!anchor || !anchor.parentNode) return;
 
-    const btn = document.createElement('button');
-    btn.id = 'bpToggleMeasureBtn';
-    btn.type = 'button';
-    btn.className =
-      'px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center gap-1.5 transition shrink-0';
-    btn.title = 'Measure Distance & Area';
-    btn.innerHTML = `<span>📐</span><span>Measure</span>`;
-    btn.addEventListener('click', () => {
-      const s = getViewerState();
-      if (!s?.activeDoc) {
-        toast('Open a blueprint first to measure.', 'info');
-        return;
-      }
-      setMeasureActive(!mState.active);
-    });
+    if (!document.getElementById('bpToggleMeasureBtn')) {
+      const btn = document.createElement('button');
+      btn.id = 'bpToggleMeasureBtn';
+      btn.type = 'button';
+      btn.className =
+        'px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center gap-1.5 transition shrink-0';
+      btn.title = 'Measure Distance & Area';
+      btn.innerHTML = `<span>📐</span><span>Measure</span>`;
+      btn.addEventListener('click', () => {
+        const s = getViewerState();
+        if (!s?.activeDoc) {
+          toast('Open a blueprint first to measure.', 'info');
+          return;
+        }
+        setMeasureActive(!mState.active);
+      });
+      anchor.parentNode.insertBefore(btn, anchor);
+    }
 
-    anchor.parentNode.insertBefore(btn, anchor);
+    if (!document.getElementById('bpToggleFullscreenBtn')) {
+      const fsBtn = document.createElement('button');
+      fsBtn.id = 'bpToggleFullscreenBtn';
+      fsBtn.type = 'button';
+      fsBtn.className =
+        'px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center gap-1 transition shrink-0';
+      fsBtn.title = 'Fullscreen Drawing View';
+      fsBtn.innerHTML = `<span>⛶</span><span>Full</span>`;
+      fsBtn.addEventListener('click', () => {
+        const s = getViewerState();
+        if (!s?.activeDoc) {
+          toast('Open a blueprint first.', 'info');
+          return;
+        }
+        setFullscreen(!mState.fullscreen);
+      });
+      const measureBtn = document.getElementById('bpToggleMeasureBtn');
+      anchor.parentNode.insertBefore(fsBtn, measureBtn || anchor);
+    }
   }
 
   function ensureStageLayer() {
@@ -769,6 +978,14 @@
     const viewport = document.getElementById('bpCanvasViewport');
     if (!viewport) return;
 
+    if (!document.getElementById('bpFullscreenFloatBar')) {
+      const fsFloat = document.createElement('div');
+      fsFloat.id = 'bpFullscreenFloatBar';
+      fsFloat.setAttribute('data-bp-measure-ui', '1');
+      fsFloat.className = 'hidden absolute top-2 right-2 z-50 flex items-center gap-1.5';
+      viewport.appendChild(fsFloat);
+    }
+
     if (!document.getElementById('bpMeasureTopBanner')) {
       const topBanner = document.createElement('div');
       topBanner.id = 'bpMeasureTopBanner';
@@ -784,7 +1001,6 @@
       totalsWrap.setAttribute('data-bp-measure-ui', '1');
       totalsWrap.className =
         'hidden absolute top-3 left-1/2 -translate-x-1/2 z-40 w-[94%] max-w-md flex flex-col items-center';
-      // Prevent scrolling inside the dropdown list from zooming the PDF underneath
       totalsWrap.addEventListener('wheel', (e) => e.stopPropagation(), { passive: true });
       viewport.appendChild(totalsWrap);
     }
@@ -922,7 +1138,7 @@
   }
 
   // =========================================================================
-  // 5. SCALE MODAL (SUPERVISOR / PM / ADMIN ONLY)
+  // 6. SCALE MODAL (SUPERVISOR / PM / ADMIN ONLY)
   // =========================================================================
   function openScaleModal() {
     const s = getViewerState();
@@ -1040,6 +1256,7 @@
         mState.calPoints = [];
         mState.tool = 'calibrate';
         mState.totalsDropdownOpen = false;
+        mState.dockCollapsed = false;
         renderMeasureUI();
       };
     }
@@ -1064,7 +1281,7 @@
   }
 
   // =========================================================================
-  // 6. OVERLAY RENDERING (SVG LINES/POLYGONS + HIGHLIGHTING + HANDLES/LABELS)
+  // 7. OVERLAY RENDERING (SVG LINES/POLYGONS + HIGHLIGHTING + HANDLES/LABELS)
   // =========================================================================
   function updateZoomScaleVar(zoom) {
     const layer = document.getElementById('bpMeasureStageLayer');
@@ -1132,7 +1349,6 @@
       }
       h.innerHTML = `<div class="bp-m-handle-dot" style="background:${dotBg};"></div>`;
 
-      // Click/tap first point on an open 3+ point shape to close & finish loop
       if (meta.isCloseTarget) {
         h.addEventListener('pointerdown', (e) => {
           e.stopPropagation();
@@ -1205,7 +1421,6 @@
         e.stopPropagation();
         d.el.classList.remove('is-dragging');
 
-        // Auto-sync vertex edits back to Supabase if this measurement is already saved
         if (d.moved && d.meta.kind === 'shape') {
           const shape = mState.shapes.find((sh) => sh.id === d.meta.shapeId);
           if (shape && shape.saved) {
@@ -1220,7 +1435,6 @@
       htmlLayer.appendChild(h);
     };
 
-    // A. Draw calibration line if calibrating
     if (mState.tool === 'calibrate' && mState.calPoints.length > 0) {
       if (mState.calPoints.length === 2) {
         const [p1, p2] = mState.calPoints;
@@ -1240,7 +1454,6 @@
       });
     }
 
-    // B. Draw distance & area shapes (render highlighted shape last so it stays on top)
     const scale = mState.pageScale;
     const orderedShapes = [...mState.shapes].sort((a, b) => {
       if (a.id === mState.selectedShapeId) return 1;
@@ -1382,7 +1595,7 @@
   }
 
   // =========================================================================
-  // 7. TOP MEASURED TOTALS DROPDOWN, CALIBRATION BANNER & FLOATING DOCK
+  // 8. TOP MEASURED TOTALS DROPDOWN, CALIBRATION BANNER & FLOATING DOCK
   // =========================================================================
   function renderTopBanner() {
     const banner = document.getElementById('bpMeasureTopBanner');
@@ -1511,7 +1724,7 @@
         .join('');
 
       menuHtml = `
-        <div class="mt-2 w-full rounded-2xl bg-slate-900/95 border border-slate-700/90 shadow-2xl backdrop-blur p-2.5 text-slate-100 space-y-2">
+        <div class="mt-1.5 w-full rounded-2xl bg-slate-900/95 border border-slate-700/90 shadow-2xl backdrop-blur p-2.5 text-slate-100 space-y-2">
           <div class="flex items-center justify-between gap-2 px-1">
             <div class="text-[11px] text-slate-400 font-semibold">
               Tap to highlight • <span class="text-emerald-400">●</span> Saved (${savedCount})
@@ -1536,7 +1749,7 @@
             </div>
           </div>
 
-          <div class="max-h-[45vh] overflow-y-auto space-y-1.5 pr-0.5">
+          <div class="bp-totals-scroll max-h-[45vh] overflow-y-auto space-y-1.5 pr-0.5">
             ${itemsHtml}
           </div>
         </div>
@@ -1638,6 +1851,7 @@
 
     if (!mState.active || !s?.activeDoc) {
       dock.classList.add('hidden');
+      dock.classList.remove('is-collapsed');
       return;
     }
 
@@ -1651,12 +1865,67 @@
     const displayShape =
       getActiveShape() || selectedShape || (mState.shapes.length > 0 ? mState.shapes[mState.shapes.length - 1] : null);
 
+    // Minimized Pill Mode (when user taps ▾)
+    if (mState.dockCollapsed && mState.tool !== 'calibrate') {
+      dock.classList.add('is-collapsed');
+      let compactLabel = mState.tool === 'area' ? 'Area' : 'Distance';
+      if (displayShape && scale) {
+        if (displayShape.type === 'distance' && displayShape.points.length >= 2) {
+          compactLabel = formatFeetInches(computeDistanceMetrics(displayShape.points, scale, displayShape.closed).totalFt);
+        } else if (displayShape.type === 'area' && displayShape.points.length >= 3) {
+          compactLabel = formatSqFt(computeAreaMetrics(displayShape.points, scale).areaSqFt);
+        }
+      }
+      const canSaveCompact = displayShape && isMeasurableShape(displayShape) && !displayShape.saved;
+
+      dock.innerHTML = `
+        <div class="flex items-center gap-2">
+          <button id="bpDockExpandBtn" type="button"
+            class="flex items-center gap-1.5 text-xs font-extrabold text-white">
+            <span>📐</span>
+            <span>${esc(compactLabel)}</span>
+            <span class="text-slate-400 text-[10px]">▴</span>
+          </button>
+          ${
+            canSaveCompact
+              ? `<button id="bpDockSaveCurrentBtn" type="button"
+                  class="px-2 py-1 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-[11px] font-extrabold">
+                  Save
+                </button>`
+              : ''
+          }
+          <button id="bpDockCloseBtn" type="button"
+            class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-slate-300 text-[11px] font-bold">
+            Done
+          </button>
+        </div>
+      `;
+
+      document.getElementById('bpDockExpandBtn').onclick = () => {
+        mState.dockCollapsed = false;
+        renderDock();
+      };
+      document.getElementById('bpDockCloseBtn').onclick = () => setMeasureActive(false);
+      const saveCompactBtn = document.getElementById('bpDockSaveCurrentBtn');
+      if (saveCompactBtn && displayShape) {
+        saveCompactBtn.onclick = async () => {
+          if (displayShape.type === 'area' && displayShape.points.length >= 3) {
+            displayShape.closed = true;
+          }
+          await saveShapesToSupabase([displayShape]);
+        };
+      }
+      return;
+    }
+
+    dock.classList.remove('is-collapsed');
+
     let readoutHtml = '';
     if (!scale) {
       readoutHtml = canCal
         ? `
-          <div class="rounded-xl bg-amber-500/15 border border-amber-400/40 px-3 py-2.5 flex items-center justify-between gap-2">
-            <div class="text-xs text-amber-200 font-semibold">Sheet not calibrated yet. Set scale to measure.</div>
+          <div class="bp-mdock-readout rounded-xl bg-amber-500/15 border border-amber-400/40 px-3 py-2 flex items-center justify-between gap-2">
+            <div class="bp-mdock-readout-val text-xs text-amber-200 font-semibold truncate">Sheet not calibrated yet.</div>
             <button id="bpDockSetScaleNowBtn" type="button"
               class="shrink-0 px-3 py-1.5 rounded-lg bg-amber-400 hover:bg-amber-300 text-slate-950 font-extrabold text-xs">
               Set Scale
@@ -1664,23 +1933,23 @@
           </div>
         `
         : `
-          <div class="rounded-xl bg-amber-500/15 border border-amber-400/40 px-3 py-2.5 text-xs text-amber-200 font-semibold">
-            Sheet not calibrated yet. Ask a Supervisor, PM, or Admin to set the scale.
+          <div class="bp-mdock-readout rounded-xl bg-amber-500/15 border border-amber-400/40 px-3 py-2 text-xs text-amber-200 font-semibold truncate">
+            Not calibrated — ask a Supervisor, PM, or Admin.
           </div>
         `;
     } else if (mState.tool === 'calibrate') {
       readoutHtml = `
-        <div class="rounded-xl bg-amber-500/15 border border-amber-400/40 px-3 py-2 text-xs text-amber-200 font-semibold">
+        <div class="bp-mdock-readout rounded-xl bg-amber-500/15 border border-amber-400/40 px-3 py-2 text-xs text-amber-200 font-semibold">
           Placing calibration points (${mState.calPoints.length}/2)...
         </div>
       `;
     } else if (!displayShape) {
       readoutHtml = `
-        <div class="rounded-xl bg-slate-950/80 border border-slate-800 px-3 py-2 text-xs text-slate-300">
+        <div class="bp-mdock-readout rounded-xl bg-slate-950/80 border border-slate-800 px-3 py-2 text-xs text-slate-300 truncate">
           ${
             mState.tool === 'distance'
-              ? 'Tap two or more points to measure distance (tap the first dot again to close a perimeter).'
-              : 'Tap 3 or more corners around an area to calculate square footage.'
+              ? 'Tap points to measure distance (tap start dot to close).'
+              : 'Tap 3+ corners around an area to measure sq ft.'
           }
         </div>
       `;
@@ -1694,12 +1963,12 @@
       const canSaveThis = displayShape.points.length >= 2 && !displayShape.saved;
 
       readoutHtml = `
-        <div class="rounded-xl bg-slate-950/90 border border-sky-500/40 px-3.5 py-2 flex items-center justify-between gap-2">
+        <div class="bp-mdock-readout rounded-xl bg-slate-950/90 border border-sky-500/40 px-3.5 py-2 flex items-center justify-between gap-2">
           <div class="min-w-0">
-            <div class="text-[10px] uppercase tracking-wider text-sky-400 font-bold truncate">
+            <div class="bp-mdock-eyebrow text-[10px] uppercase tracking-wider text-sky-400 font-bold truncate">
               ${esc(headingLabel)}
             </div>
-            <div class="text-lg font-extrabold text-white leading-tight">
+            <div class="bp-mdock-readout-val text-lg font-extrabold text-white leading-tight truncate">
               ${displayShape.points.length >= 2 ? `${esc(formatFeetInches(totalFt))} <span class="text-xs font-semibold text-slate-400">(${esc(formatDecimalFeet(totalFt))})</span>` : 'Tap 2nd point...'}
             </div>
           </div>
@@ -1711,7 +1980,7 @@
             }
             ${
               displayShape.points.length >= 2 && mState.activeShapeId === displayShape.id && !displayShape.closed
-                ? `<button id="bpDockNewShapeBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 text-xs font-bold">New Line</button>`
+                ? `<button id="bpDockNewShapeBtn" type="button" class="px-2.5 py-1.5 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 border border-sky-400/40 text-sky-200 text-xs font-bold">New</button>`
                 : ''
             }
           </div>
@@ -1721,15 +1990,15 @@
       const { areaSqFt, perimeterFt } = computeAreaMetrics(displayShape.points, scale);
       const canSaveThis = displayShape.points.length >= 3 && !displayShape.saved;
       readoutHtml = `
-        <div class="rounded-xl bg-slate-950/90 border border-emerald-500/40 px-3.5 py-2 flex items-center justify-between gap-2">
+        <div class="bp-mdock-readout rounded-xl bg-slate-950/90 border border-emerald-500/40 px-3.5 py-2 flex items-center justify-between gap-2">
           <div class="min-w-0">
-            <div class="text-[10px] uppercase tracking-wider text-emerald-400 font-bold truncate">
+            <div class="bp-mdock-eyebrow text-[10px] uppercase tracking-wider text-emerald-400 font-bold truncate">
               ${esc(displayShape.name || 'Surface Area')}
             </div>
-            <div class="text-lg font-extrabold text-white leading-tight">
+            <div class="bp-mdock-readout-val text-lg font-extrabold text-white leading-tight truncate">
               ${
                 displayShape.points.length >= 3
-                  ? `${esc(formatSqFt(areaSqFt))} <span class="text-xs font-semibold text-slate-400">• Perim ${esc(formatFeetInches(perimeterFt))}</span>`
+                  ? `${esc(formatSqFt(areaSqFt))} <span class="text-xs font-semibold text-slate-400">• ${esc(formatFeetInches(perimeterFt))}</span>`
                   : `Tap ${3 - displayShape.points.length} more corner${displayShape.points.length === 2 ? '' : 's'}...`
               }
             </div>
@@ -1752,14 +2021,14 @@
 
     const scaleStatusHtml = scale
       ? `
-        <div class="flex items-center gap-2 min-w-0">
+        <div class="bp-mdock-scale-info flex items-center gap-2 min-w-0">
           <span class="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></span>
           <span class="text-xs font-bold text-emerald-300 truncate">${esc(scale.scale_label)}</span>
           ${scale.calibrated_by ? `<span class="hidden sm:inline text-[11px] text-slate-400 truncate">• ${esc(scale.calibrated_by)}</span>` : ''}
         </div>
       `
       : `
-        <div class="flex items-center gap-2 min-w-0">
+        <div class="bp-mdock-scale-info flex items-center gap-2 min-w-0">
           <span class="w-2 h-2 rounded-full bg-amber-400 shrink-0"></span>
           <span class="text-xs font-bold text-amber-300 truncate">Not Calibrated</span>
         </div>
@@ -1768,19 +2037,25 @@
     const unsavedCount = mState.shapes.filter((sh) => !sh.saved && sh.points.length > 0).length;
     const hasAnyPoints = mState.shapes.some((sh) => sh.points.length > 0);
     const activeTargetForUndo = getActiveShape() || mState.shapes.slice().reverse().find((sh) => !sh.saved);
+    const showUnsavedSuffix = unsavedCount > 0 && unsavedCount < mState.shapes.length;
 
     dock.innerHTML = `
-      <div class="flex items-center justify-between gap-2">
+      <div class="bp-mdock-header flex items-center justify-between gap-2">
         ${scaleStatusHtml}
-        <div class="flex items-center gap-1.5 shrink-0">
+        <div class="bp-mdock-header-actions flex items-center gap-1.5 shrink-0">
           ${
             canCal
-              ? `<button id="bpDockCalibrateBtn" type="button"
+              ? `<button id="bpDockCalibrateBtn" type="button" title="${scale ? 'Recalibrate sheet scale' : 'Calibrate sheet scale'}"
                   class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-600 text-[11px] font-bold text-slate-100">
-                  ${scale ? 'Recalibrate' : 'Calibrate'}
+                  <span class="bp-mdock-land-full">${scale ? 'Recalibrate' : 'Calibrate'}</span>
+                  <span class="bp-mdock-land-short hidden">Cal</span>
                 </button>`
               : ''
           }
+          <button id="bpDockCollapseBtn" type="button" title="Minimize measure bar"
+            class="px-2 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-[11px] font-bold text-slate-300">
+            ▾
+          </button>
           <button id="bpDockCloseBtn" type="button"
             class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-rose-500/20 hover:text-rose-200 border border-slate-700 text-[11px] font-bold text-slate-300">
             Done
@@ -1790,23 +2065,23 @@
 
       ${readoutHtml}
 
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <div class="flex items-center gap-1.5">
-          <button id="bpToolDistanceBtn" type="button" ${!scale ? 'disabled' : ''}
+      <div class="bp-mdock-tools flex flex-wrap items-center justify-between gap-2">
+        <div class="bp-mdock-tools-left flex items-center gap-1.5">
+          <button id="bpToolDistanceBtn" type="button" title="Distance" ${!scale ? 'disabled' : ''}
             class="px-3 py-2 rounded-xl text-xs font-bold transition ${
               mState.tool === 'distance' && scale
                 ? 'bg-sky-500 text-slate-950'
                 : 'bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-40'
             }">
-            📏 Distance
+            <span>📏</span><span class="bp-mdock-tool-lbl"> Distance</span>
           </button>
-          <button id="bpToolAreaBtn" type="button" ${!scale ? 'disabled' : ''}
+          <button id="bpToolAreaBtn" type="button" title="Surface Area" ${!scale ? 'disabled' : ''}
             class="px-3 py-2 rounded-xl text-xs font-bold transition ${
               mState.tool === 'area' && scale
                 ? 'bg-emerald-500 text-slate-950'
                 : 'bg-slate-800 text-slate-300 hover:bg-slate-700 disabled:opacity-40'
             }">
-            ⬠ Area
+            <span>⬠</span><span class="bp-mdock-tool-lbl"> Area</span>
           </button>
           <button id="bpToolOrthoBtn" type="button" ${!scale ? 'disabled' : ''}
             title="Lock segments to 90° horizontal/vertical"
@@ -1819,25 +2094,29 @@
           </button>
         </div>
 
-        <div class="flex items-center gap-1.5">
+        <div class="bp-mdock-tools-right flex items-center gap-1.5">
           <button id="bpToolUndoBtn" type="button" ${!activeTargetForUndo ? 'disabled' : ''}
             class="px-2.5 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-xs font-bold text-slate-200">
             Undo
           </button>
           <button id="bpToolClearBtn" type="button" ${!hasAnyPoints ? 'disabled' : ''}
             class="px-2.5 py-2 rounded-xl bg-rose-500/15 hover:bg-rose-500/25 disabled:opacity-40 border border-rose-500/30 text-xs font-bold text-rose-300">
-            ${unsavedCount > 0 && unsavedCount < mState.shapes.length ? 'Clear Unsaved' : 'Clear'}
+            Clear${showUnsavedSuffix ? '<span class="bp-mdock-clear-extra"> Unsaved</span>' : ''}
           </button>
         </div>
       </div>
 
-      <div class="text-[10px] text-slate-500 text-center">
+      <div class="bp-mdock-note text-[10px] text-slate-500 text-center">
         Reference only — verify critical dimensions against printed callouts. Tap amber start dot to close loop, or drag dots to fine-tune.
       </div>
     `;
 
     // Wire dock buttons
     document.getElementById('bpDockCloseBtn').onclick = () => setMeasureActive(false);
+    document.getElementById('bpDockCollapseBtn').onclick = () => {
+      mState.dockCollapsed = true;
+      renderDock();
+    };
 
     const calBtn = document.getElementById('bpDockCalibrateBtn');
     if (calBtn) calBtn.onclick = openScaleModal;
@@ -1974,6 +2253,7 @@
         : 'px-2.5 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-100 border border-slate-600/80 flex items-center gap-1.5 transition shrink-0';
     }
 
+    renderFullscreenControls();
     renderTopBanner();
     renderTopTotalsDropdown();
     renderDock();
@@ -1981,7 +2261,7 @@
   }
 
   // =========================================================================
-  // 8. TAP-TO-MEASURE VIEWPORT LISTENER (PRESERVES PAN & PINCH-ZOOM)
+  // 9. TAP-TO-MEASURE VIEWPORT LISTENER (PRESERVES PAN & PINCH-ZOOM)
   // =========================================================================
   function bindViewportTapHandler() {
     const viewport = document.getElementById('bpCanvasViewport');
@@ -2051,12 +2331,10 @@
     const rawPt = clientToNorm(clientX, clientY);
     if (!rawPt) return;
 
-    // Close the top dropdown if the user starts tapping the drawing
     if (mState.totalsDropdownOpen) {
       mState.totalsDropdownOpen = false;
     }
 
-    // A. 2-Point Calibration mode
     if (mState.tool === 'calibrate') {
       if (!s.canCalibrate) return;
       const pt =
@@ -2078,14 +2356,12 @@
       return;
     }
 
-    // B. Distance / Area measurement mode
     if (!mState.pageScale) {
       if (s.canCalibrate) openScaleModal();
       else toast('This sheet is not calibrated yet. Ask a Supervisor, PM, or Admin to set the scale.', 'warning');
       return;
     }
 
-    // Clear highlight filter when actively placing new measurement points
     mState.selectedShapeId = null;
 
     let shape = getActiveShape();
@@ -2109,15 +2385,24 @@
   }
 
   // =========================================================================
-  // 9. LIFECYCLE & PUBLIC HOOKS FOR blueprints.js
+  // 10. LIFECYCLE & PUBLIC HOOKS FOR blueprints.js
   // =========================================================================
   function mountIfReady() {
     if (!document.getElementById('bpCanvasViewport')) return;
     injectStyles();
-    ensureToolbarButton();
+    ensureToolbarButtons();
     ensureStageLayer();
     ensureFloatingDock();
+    tagBlueprintTopChrome();
     bindViewportTapHandler();
+
+    if (!mState.mounted) {
+      document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && mState.fullscreen) {
+          setFullscreen(false);
+        }
+      });
+    }
     mState.mounted = true;
   }
 
@@ -2132,6 +2417,7 @@
       mState.calPoints = [];
       mState.selectedShapeId = null;
       mState.totalsDropdownOpen = false;
+      mState.dockCollapsed = false;
       if (mState.tool === 'calibrate') mState.tool = 'distance';
       closeScaleModal();
       document.getElementById('bpCalLengthModal')?.classList.add('hidden');
@@ -2143,6 +2429,7 @@
 
   window.ACTBlueprintMeasure = {
     setActive: setMeasureActive,
+    setFullscreen,
     onPageRendered() {
       mountIfReady();
       const s = getViewerState();
@@ -2170,6 +2457,7 @@
     },
     onHeaderUpdated() {
       mountIfReady();
+      renderFullscreenControls();
       if (mState.active) {
         renderTopTotalsDropdown();
         renderDock();
@@ -2180,6 +2468,7 @@
       mState.shapes = [];
       mState.activeShapeId = null;
       mState.selectedShapeId = null;
+      if (mState.fullscreen) setFullscreen(false);
       setMeasureActive(false);
     }
   };
