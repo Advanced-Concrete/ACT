@@ -1,0 +1,478 @@
+// =========================================================================
+// ACT MASTER - NATIVE BACK BUTTON & HISTORY CONTROLLER (back-nav.js)
+// Zero-conflict drop-in History API manager for Android, iOS & Desktop PWAs
+// - Pushes real user-gesture history entries (beats Chrome's history intervention)
+// - Steps back cleanly through: Modals -> Side Menu -> Blueprint Fullscreen ->
+//   Measure Mode -> Calendar Day View -> Previous View -> Home / Native Exit
+// - Rewinds stale entries when landing on Home so exiting never takes extra taps
+// =========================================================================
+(function initACTBackNav() {
+  'use strict';
+
+  const KNOWN_MODALS = [
+    'bpCalLengthModal',
+    'bpScaleModal',
+    'actDocsUploadModal',
+    'actDocsViewerModal',
+    'actCalManageModal',
+    'actCalEventModal'
+  ];
+
+  const PRIMARY_VIEW_IDS = [
+    'viewBlueprints',
+    'viewCompanyCalendar',
+    'viewCompanyDocuments',
+    'viewAdmin',
+    'viewOtherModule',
+    'viewPmPortal',
+    'viewCrew'
+  ];
+
+  const nav = {
+    depth: 0,
+    isHandlingPop: false,
+    suppressNextPop: false,
+    lastUserGestureAt: 0,
+    viewStack: [],       // e.g. [{ type: 'home', snapshot }, { type: 'feature', key: 'blueprints' }]
+    homeSnapshot: null,  // DOM snapshot of base screen before entering overlay modules
+    lastSignature: '',
+    observerTimer: null
+  };
+
+  // =========================================================================
+  // 1. VISIBILITY & UI STATE INSPECTORS
+  // =========================================================================
+  function isVisible(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.classList.contains('hidden')) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') === 0) {
+      return false;
+    }
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  }
+
+  function findSideMenuElement() {
+    const anchor =
+      document.getElementById('menuFeatBlueprints') ||
+      document.getElementById('menuFeatCalendar') ||
+      document.getElementById('menuFeatDocuments');
+    if (!anchor) return null;
+    return anchor.closest('aside, [id*="Menu"], [id*="Drawer"], [id*="Sidebar"], .fixed') || anchor.parentElement;
+  }
+
+  function isSideMenuOpen() {
+    const el = findSideMenuElement();
+    if (!el || el.classList.contains('hidden')) return false;
+    const style = window.getComputedStyle(el);
+    if (style.display === 'none' || style.visibility === 'hidden' || parseFloat(style.opacity || '1') === 0) {
+      return false;
+    }
+    const rect = el.getBoundingClientRect();
+    // Handles both `hidden`-toggled drawers and `-translate-x-full` off-screen drawers
+    return rect.width > 40 && rect.right > 20 && rect.left < window.innerWidth - 20;
+  }
+
+  function findTopOpenModal() {
+    // 1. Check our explicit module modals in strict z-order priority
+    for (const id of KNOWN_MODALS) {
+      const el = document.getElementById(id);
+      if (isVisible(el)) return el;
+    }
+
+    // 2. Fallback: detect any other visible fullscreen modal overlay (Dropbox picker, Callout editor, Receipt modal, etc.)
+    const sideMenuEl = findSideMenuElement();
+    const candidates = Array.from(document.querySelectorAll('body > div, body > section')).filter((el) => {
+      if (PRIMARY_VIEW_IDS.includes(el.id)) return false;
+      if (el === sideMenuEl || (sideMenuEl && el.contains(sideMenuEl))) return false;
+      if (/toast|snackbar|backdrop|overlay/i.test(el.id) && !/modal/i.test(el.id)) return false;
+      if (!isVisible(el)) return false;
+
+      const style = window.getComputedStyle(el);
+      if (style.position !== 'fixed') return false;
+      const z = parseInt(style.zIndex, 10) || 0;
+      const rect = el.getBoundingClientRect();
+      const coversViewport = rect.width >= window.innerWidth * 0.85 && rect.height >= window.innerHeight * 0.7;
+      return coversViewport && z >= 40;
+    });
+
+    if (candidates.length === 0) return null;
+    candidates.sort((a, b) => (parseInt(getComputedStyle(b).zIndex, 10) || 0) - (parseInt(getComputedStyle(a).zIndex, 10) || 0));
+    return candidates[0];
+  }
+
+  function closeModalElement(modalEl) {
+    if (!modalEl) return false;
+    if (modalEl.id === 'actDocsViewerModal') {
+      document.getElementById('actDocsViewerCloseBtn')?.click();
+      return true;
+    }
+    const closeBtn = modalEl.querySelector(
+      'button[id*="Close"], button[id*="Cancel"], button[aria-label*="Close"], button[title*="Close"]'
+    );
+    if (closeBtn) {
+      closeBtn.click();
+      return true;
+    }
+    modalEl.classList.add('hidden');
+    return true;
+  }
+
+  function isBlueprintFullscreen() {
+    return document.body.classList.contains('bp-focus-fullscreen');
+  }
+
+  function isBlueprintMeasureOpen() {
+    const view = document.getElementById('viewBlueprints');
+    return Boolean(view && isVisible(view) && view.classList.contains('bp-measure-active'));
+  }
+
+  function isMeasureTotalsDropdownOpen() {
+    return Boolean(document.querySelector('#bpMeasureTotalsWrap .bp-totals-scroll'));
+  }
+
+  function isCalendarDayViewOpen() {
+    const view = document.getElementById('viewCompanyCalendar');
+    if (!view || !isVisible(view)) return false;
+    const dayBtn = document.getElementById('actCalModeDayBtn');
+    return Boolean(dayBtn && dayBtn.classList.contains('bg-sky-500'));
+  }
+
+  function getActiveTopModule() {
+    if (isVisible(document.getElementById('viewBlueprints'))) return 'blueprints';
+    if (isVisible(document.getElementById('viewCompanyCalendar'))) return 'calendar';
+    if (isVisible(document.getElementById('viewCompanyDocuments'))) return 'documents';
+    if (isVisible(document.getElementById('viewAdmin'))) return 'admin';
+    if (isVisible(document.getElementById('viewOtherModule'))) return 'other';
+    if (isVisible(document.getElementById('viewPmPortal'))) return 'pm_portal';
+    return 'home';
+  }
+
+  // =========================================================================
+  // 2. HOME SCREEN SNAPSHOT & RESTORE
+  // =========================================================================
+  function captureHomeSnapshotIfAtBase() {
+    const activeMod = getActiveTopModule();
+    if (activeMod === 'blueprints' || activeMod === 'calendar' || activeMod === 'documents') return;
+
+    const baseIds = ['viewCrew', 'viewAdmin', 'viewOtherModule', 'viewPmPortal', 'roleWorkspaceQuickBar'];
+    const visibleIds = baseIds.filter((id) => {
+      const el = document.getElementById(id);
+      return el && !el.classList.contains('hidden');
+    });
+
+    if (visibleIds.length > 0) {
+      nav.homeSnapshot = {
+        visibleIds,
+        title: document.getElementById('topBarPageTitle')?.textContent || ''
+      };
+    }
+  }
+
+  function restoreHomeView() {
+    window.ACTBlueprints?.close?.();
+    window.ACTCalendar?.close?.();
+    window.ACTDocuments?.close?.();
+
+    const baseIds = ['viewCrew', 'viewAdmin', 'viewOtherModule', 'viewPmPortal', 'roleWorkspaceQuickBar'];
+    baseIds.forEach((id) => document.getElementById(id)?.classList.add('hidden'));
+
+    if (nav.homeSnapshot && nav.homeSnapshot.visibleIds.length > 0) {
+      nav.homeSnapshot.visibleIds.forEach((id) => document.getElementById(id)?.classList.remove('hidden'));
+      const titleEl = document.getElementById('topBarPageTitle');
+      if (titleEl && nav.homeSnapshot.title) titleEl.textContent = nav.homeSnapshot.title;
+    } else if (typeof window.openMyPersonalCardView === 'function') {
+      nav.isHandlingPop = true;
+      try {
+        window.openMyPersonalCardView();
+      } finally {
+        nav.isHandlingPop = false;
+      }
+    } else {
+      document.getElementById('viewCrew')?.classList.remove('hidden');
+      document.getElementById('roleWorkspaceQuickBar')?.classList.remove('hidden');
+    }
+
+    if (typeof window.refreshRoleUiVisibility === 'function') {
+      try { window.refreshRoleUiVisibility(); } catch {}
+    }
+  }
+
+  // =========================================================================
+  // 3. HISTORY STACK MANAGEMENT (USER-GESTURE SAFE)
+  // =========================================================================
+  function initRootHistoryState() {
+    try {
+      const existing = window.history.state;
+      if (!existing || !existing.actBackNav) {
+        window.history.replaceState({ actBackNav: true, actDepth: 0, actLayer: 'root' }, '');
+        nav.depth = 0;
+      } else {
+        nav.depth = Number(existing.actDepth) || 0;
+      }
+    } catch {}
+  }
+
+  function pushLayer(layerName, replaceIfMenu = false) {
+    if (nav.isHandlingPop) return;
+    try {
+      const curState = window.history.state;
+      if (replaceIfMenu && curState?.actBackNav && curState.actLayer === 'menu' && curState.actDepth > 0) {
+        window.history.replaceState({ actBackNav: true, actDepth: curState.actDepth, actLayer: layerName }, '');
+        nav.depth = curState.actDepth;
+        return;
+      }
+      const nextDepth = (Number(curState?.actDepth) || nav.depth || 0) + 1;
+      window.history.pushState({ actBackNav: true, actDepth: nextDepth, actLayer: layerName }, '');
+      nav.depth = nextDepth;
+    } catch {}
+  }
+
+  function rewindStaleHistoryIfAtHome() {
+    const curDepth = Number(window.history.state?.actDepth) || 0;
+    if (curDepth > 0 && isCompletelyAtHome()) {
+      nav.suppressNextPop = true;
+      nav.depth = 0;
+      try {
+        window.history.go(-curDepth);
+      } catch {
+        nav.suppressNextPop = false;
+      }
+    }
+  }
+
+  function isCompletelyAtHome() {
+    if (findTopOpenModal()) return false;
+    if (isSideMenuOpen()) return false;
+    if (isBlueprintFullscreen()) return false;
+    if (isBlueprintMeasureOpen()) return false;
+    if (nav.viewStack.length > 0) return false;
+    const mod = getActiveTopModule();
+    return mod === 'home';
+  }
+
+  // =========================================================================
+  // 4. POPSTATE HANDLER (THE ACTUAL BACK BUTTON STEP-BACK)
+  // =========================================================================
+  function handleNativeBack(event) {
+    if (nav.suppressNextPop) {
+      nav.suppressNextPop = false;
+      nav.depth = Number(event.state?.actDepth) || 0;
+      return;
+    }
+
+    nav.depth = Number(event.state?.actDepth) || 0;
+    nav.isHandlingPop = true;
+
+    try {
+      // 1. Close topmost open modal
+      const openModal = findTopOpenModal();
+      if (openModal) {
+        closeModalElement(openModal);
+        return;
+      }
+
+      // 2. Close Side Menu drawer
+      if (isSideMenuOpen()) {
+        if (typeof window.closeSideMenu === 'function') {
+          window.closeSideMenu();
+        } else {
+          findSideMenuElement()?.classList.add('hidden');
+        }
+        return;
+      }
+
+      // 3. Exit Blueprint Fullscreen mode
+      if (isBlueprintFullscreen()) {
+        window.ACTBlueprintMeasure?.setFullscreen?.(false);
+        return;
+      }
+
+      // 4. Close Measured Totals dropdown, or exit Blueprint Measure mode
+      if (isBlueprintMeasureOpen()) {
+        if (isMeasureTotalsDropdownOpen()) {
+          document.getElementById('bpTotalsToggleBtn')?.click();
+          return;
+        }
+        window.ACTBlueprintMeasure?.setActive?.(false);
+        return;
+      }
+
+      // 5. Step from Calendar Day view back to Calendar Month view
+      if (isCalendarDayViewOpen()) {
+        document.getElementById('actCalModeMonthBtn')?.click();
+        return;
+      }
+
+      // 6. Step back through view stack (or exit current secondary module back to Home)
+      if (nav.viewStack.length > 0) {
+        nav.viewStack.pop();
+        const prev = nav.viewStack[nav.viewStack.length - 1];
+        if (!prev) {
+          restoreHomeView();
+        } else if (prev.kind === 'feature' && typeof window.selectMenuFeature === 'function') {
+          window.selectMenuFeature(prev.key);
+        } else if (prev.kind === 'admin' && typeof window.openAdminPage === 'function') {
+          window.openAdminPage();
+        } else {
+          restoreHomeView();
+        }
+        return;
+      }
+
+      const activeMod = getActiveTopModule();
+      if (activeMod !== 'home') {
+        restoreHomeView();
+        return;
+      }
+    } finally {
+      nav.isHandlingPop = false;
+      nav.lastSignature = computeLayerSignature();
+      // If we just landed on Home with leftover stale modal entries, rewind to root cleanly
+      setTimeout(rewindStaleHistoryIfAtHome, 0);
+    }
+  }
+
+  // =========================================================================
+  // 5. HOOK ACT NAVIGATION & OBSERVE MODALS / MENU / FULLSCREEN / DAY VIEW
+  // =========================================================================
+  function computeLayerSignature() {
+    const modal = findTopOpenModal();
+    return [
+      modal ? `M:${modal.id || modal.className.slice(0, 24)}` : '',
+      isSideMenuOpen() ? 'MENU' : '',
+      isBlueprintFullscreen() ? 'BPFS' : '',
+      isBlueprintMeasureOpen() ? 'BPMEAS' : '',
+      isCalendarDayViewOpen() ? 'CALDAY' : ''
+    ].join('|');
+  }
+
+  function onDomLayerMutation() {
+    if (nav.isHandlingPop) return;
+    const nextSig = computeLayerSignature();
+    if (nextSig === nav.lastSignature) return;
+
+    const prevParts = new Set(nav.lastSignature.split('|').filter(Boolean));
+    const nextParts = nextSig.split('|').filter(Boolean);
+    const added = nextParts.filter((p) => !prevParts.has(p));
+    nav.lastSignature = nextSig;
+
+    // Only push when a new layer OPENED in response to a recent user interaction
+    const recentGesture = Date.now() - nav.lastUserGestureAt < 2000;
+    if (added.length > 0 && recentGesture) {
+      const topAdded = added[added.length - 1];
+      const layerTag = topAdded === 'MENU' ? 'menu' : topAdded.toLowerCase();
+      pushLayer(layerTag, false);
+    }
+  }
+
+  function installObservers() {
+    // Track user gestures so Chrome/Android always treats our pushState as user-activated
+    const markGesture = () => {
+      nav.lastUserGestureAt = Date.now();
+    };
+    window.addEventListener('pointerdown', markGesture, { capture: true, passive: true });
+    window.addEventListener('keydown', markGesture, { capture: true, passive: true });
+
+    const observer = new MutationObserver(() => {
+      if (nav.observerTimer) return;
+      nav.observerTimer = requestAnimationFrame(() => {
+        nav.observerTimer = null;
+        onDomLayerMutation();
+      });
+    });
+
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ['class', 'style'],
+      childList: true,
+      subtree: true
+    });
+  }
+
+  function installNavigationWrappers() {
+    const prevSelectMenu = window.selectMenuFeature;
+    if (typeof prevSelectMenu === 'function') {
+      window.selectMenuFeature = function (featureKey) {
+        if (!nav.isHandlingPop) {
+          if (nav.viewStack.length === 0) captureHomeSnapshotIfAtBase();
+
+          const isSubModule =
+            featureKey === 'blueprints' ||
+            featureKey === 'calendar' ||
+            featureKey === 'documents';
+
+          if (isSubModule) {
+            const top = nav.viewStack[nav.viewStack.length - 1];
+            if (!top || top.kind !== 'feature' || top.key !== featureKey) {
+              nav.viewStack.push({ kind: 'feature', key: featureKey });
+              pushLayer(`view:${featureKey}`, true);
+            }
+          } else {
+            // Returning to a core/home tab clears secondary module history
+            nav.viewStack = [];
+          }
+        }
+        return prevSelectMenu.apply(this, arguments);
+      };
+    }
+
+    const prevOpenAdmin = window.openAdminPage;
+    if (typeof prevOpenAdmin === 'function') {
+      window.openAdminPage = function () {
+        if (!nav.isHandlingPop) {
+          if (nav.viewStack.length === 0) captureHomeSnapshotIfAtBase();
+          const top = nav.viewStack[nav.viewStack.length - 1];
+          if (!top || top.kind !== 'admin') {
+            nav.viewStack.push({ kind: 'admin' });
+            pushLayer('view:admin', true);
+          }
+        }
+        return prevOpenAdmin.apply(this, arguments);
+      };
+    }
+
+    const prevPersonalCard = window.openMyPersonalCardView;
+    if (typeof prevPersonalCard === 'function') {
+      window.openMyPersonalCardView = function () {
+        if (!nav.isHandlingPop) {
+          nav.viewStack = [];
+        }
+        return prevPersonalCard.apply(this, arguments);
+      };
+    }
+
+    const prevLogout = window.logoutUser;
+    if (typeof prevLogout === 'function') {
+      window.logoutUser = function () {
+        nav.viewStack = [];
+        nav.homeSnapshot = null;
+        return prevLogout.apply(this, arguments);
+      };
+    }
+  }
+
+  function boot() {
+    initRootHistoryState();
+    installNavigationWrappers();
+    installObservers();
+    nav.lastSignature = computeLayerSignature();
+    window.addEventListener('popstate', handleNativeBack);
+  }
+
+  window.ACTBackNav = {
+    getStack: () => [...nav.viewStack],
+    resetToHome: () => {
+      nav.viewStack = [];
+      restoreHomeView();
+      rewindStaleHistoryIfAtHome();
+    }
+  };
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', boot);
+  } else {
+    boot();
+  }
+})();
