@@ -9,7 +9,7 @@
 // - Per-user saved measurements synced across devices via `blueprint_user_measurements`
 // - Phone Landscape: Auto-compacts Measure Dock into a single ~42px horizontal strip
 // - Collapsible Measure Dock (▾) + One-tap Fullscreen (⛶ Full)
-// - Clean Mobile Toolbar: packs secondary Blueprint tools into `⋯` popover &
+// - Clean Mobile Toolbar: packs secondary Blueprint tools into ⋯ popover &
 //   hides the drawing action strip when no blueprint is open
 // =========================================================================
 (function initBlueprintMeasure() {
@@ -616,7 +616,7 @@
   }
 
   // =========================================================================
-  // 4. CLEAN TOOLBAR OVERFLOW (`⋯` POPOVER), EMPTY-STATE HIDE & FULLSCREEN
+  // 4. CLEAN TOOLBAR OVERFLOW (⋯ POPOVER), EMPTY-STATE HIDE & FULLSCREEN
   // =========================================================================
   function tagBlueprintTopChrome() {
     const view = document.getElementById('viewBlueprints');
@@ -638,9 +638,11 @@
     const measureBtn = document.getElementById('bpToggleMeasureBtn');
     if (measureBtn?.parentElement) return measureBtn.parentElement;
 
-    const addLinkBtn = document.getElementById('bpToggleAddLinkBtn');
-    if (addLinkBtn?.parentElement && addLinkBtn.parentElement.id !== 'bpToolsPopoverMenu') {
-      return addLinkBtn.parentElement;
+    const anchor =
+      document.getElementById('bpToggleAddLinkBtn') ||
+      document.getElementById('bpSaveOfflineBtn');
+    if (anchor?.parentElement && anchor.parentElement.id !== 'bpToolsPopoverMenu') {
+      return anchor.parentElement;
     }
 
     const fitBtn = document.getElementById('bpZoomFitBtn');
@@ -701,12 +703,11 @@
     const menuBtn = document.getElementById('bpToolsMenuBtn');
     if (!pop || !menuBtn) return;
 
-    // Hide `⋯` button if all moved tools are hidden for this role
+    // Hide ⋯ button if all moved tools are hidden for this role
     const hasVisibleTool = Array.from(pop.children).some((el) => !el.classList.contains('hidden'));
     menuBtn.classList.toggle('hidden', !hasVisibleTool);
 
     if (!dot) return;
-    // Light up small indicator dot if Add/Edit Callout Link mode is active
     const addLinkBtn = document.getElementById('bpToggleAddLinkBtn');
     const addLinkActive = Boolean(
       addLinkBtn &&
@@ -723,7 +724,6 @@
 
     const pop = ensureToolsPopover();
 
-    // Ensure `⋯` Tools button exists inside actionRow
     let toolsBtn = document.getElementById('bpToolsMenuBtn');
     if (!toolsBtn) {
       toolsBtn = document.createElement('button');
@@ -746,7 +746,6 @@
       actionRow.appendChild(toolsBtn);
     }
 
-    // Identify the zoom group (direct child containing #bpZoomFitBtn)
     const fitBtn = document.getElementById('bpZoomFitBtn');
     let zoomChild = null;
     if (fitBtn) {
@@ -757,11 +756,10 @@
 
     const coreIds = new Set(['bpToggleMeasureBtn', 'bpToggleFullscreenBtn', 'bpToolsMenuBtn']);
 
-    // Move secondary controls (Re-Scan Links, Add/Edit Callout Link, Available Offline, etc.) into popover
+    // Move secondary controls (Re-Scan Links, Add/Edit Callout Link, Available Offline, Dropbox Browser) into popover
     Array.from(actionRow.children).forEach((child) => {
       if (child === zoomChild) return;
       if (coreIds.has(child.id)) return;
-      // Preserve individual zoom controls if Fit wasn't inside a wrapper div
       if (!zoomChild && /zoom|fit/i.test(child.id || '')) return;
       pop.appendChild(child);
     });
@@ -873,6 +871,7 @@
       /* Clean Blueprints Action Bar (No horizontal overflow + Hidden when empty) */
       .bp-action-row {
         display: flex !important;
+        flex-wrap: nowrap !important;
         align-items: center !important;
         gap: 6px !important;
         overflow: visible !important;
@@ -884,7 +883,7 @@
         display: none !important;
       }
 
-      /* Secondary Tools Popover (`⋯`) */
+      /* Secondary Tools Popover */
       #bpToolsPopoverMenu {
         position: fixed;
         z-index: 88;
